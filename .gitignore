@@ -158,6 +158,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.nashtaee_venv
 
 # Spyder project settings
 .spyderproject
