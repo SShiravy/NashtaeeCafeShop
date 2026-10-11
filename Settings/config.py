@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     TELEGRAM_SUPPORT_ID: str
     TELEGRAM_REPORT_CHANNEL: str
     TELEGRAM_PROXY: str | None = None  # e.g. socks5://127.0.0.1:9050
-    
+
     # Database
     DB_NAME: str
 

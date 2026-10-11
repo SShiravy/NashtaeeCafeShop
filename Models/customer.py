@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
 
-@dataclass(slots=True,frozen=True)
+@dataclass(slots=True, frozen=True)
 class Customer:
-    name:str
-    phone:str
-    chat_id:str
-    address:str
+    name: str
+    phone: str
+    chat_id: str
+    address: str
