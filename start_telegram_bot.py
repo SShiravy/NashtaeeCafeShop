@@ -7,7 +7,7 @@ def main() -> None:
         LoggerConfig(
             name="TelegramBot",
             log_file_name="telegram_bot",
-            telegram_token=settings.TELEGRAM_BOT_TOKEN,
+            telegram_token=settings.TELEGRAM_CUSTOMER_BOT_TOKEN,
             telegram_channel=settings.TELEGRAM_REPORT_CHANNEL,
         )
     )
@@ -15,7 +15,9 @@ def main() -> None:
         "Starting Nashtaee bot%s", " via proxy" if settings.TELEGRAM_PROXY else ""
     )
     build_application(
-        settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_PROXY
+        settings.TELEGRAM_CUSTOMER_BOT_TOKEN,
+        admin_id=settings.TELEGRAM_ADMIN_ID,
+        proxy=settings.TELEGRAM_PROXY,
     ).run_polling()
 
 

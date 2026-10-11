@@ -1,9 +1,10 @@
 import logging
 import random
 import string
+from datetime import datetime
 
-from telegram import ReplyKeyboardRemove, Update
-from telegram.error import BadRequest
+from telegram import ReplyKeyboardRemove, Update, User
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes, ConversationHandler
 
 from TelegramBot import keyboards as keyboards
@@ -315,25 +316,54 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     order_id = "NAS-" + "".join(
         random.choices(string.ascii_uppercase + string.digits, k=5)
     )
-    total = _cart_total(context.user_data["cart"])
-    log.info(
-        "New order %s from user %s:\n%s",
-        order_id,
-        update.effective_user.id,
-        "\n".join(_order_summary(context.user_data)),
+    summary = _order_summary(context.user_data)
+    admin_text = "\n".join(
+        [
+            "🆕 سفارش جدید ناشتایی",
+            "",
+            f"🔖 شماره سفارش: {order_id}",
+            f"🕐 {datetime.now():%Y/%m/%d %H:%M}",
+            f"🆔 تلگرام: {_telegram_user(update.effective_user)}",
+            "",
+            *summary,
+        ]
     )
+    # Without a database the admin's copy is the only record, so the order is
+    # confirmed to the customer only after it reaches the admin.
+    try:
+        await context.bot.send_message(context.bot_data["admin_id"], admin_text)
+    except TelegramError:
+        log.exception("Could not send order %s to the admin", order_id)
+        await query.answer(
+            "ثبت سفارش انجام نشد. لطفاً چند لحظه بعد دوباره تلاش کنید.",
+            show_alert=True,
+        )
+        return CONFIRM
+    await query.answer()
+    log.info("New order %s:\n%s", order_id, admin_text)
+    # Kept as the customer's receipt; "new order" continues in a new message.
     await query.edit_message_text(
-        f"✅ سفارش شما با موفقیت ثبت شد.\n\n"
-        f"🔖 شماره سفارش: {order_id}\n"
-        f"💰 مبلغ: {format_price(total)} تومان",
+        "\n".join(
+            [
+                "✅ سفارش شما با موفقیت ثبت شد.",
+                "",
+                f"🔖 شماره سفارش: {order_id}",
+                "",
+                *summary,
+            ]
+        ),
         reply_markup=keyboards.new_order(),
     )
     context.user_data.clear()
     return ConversationHandler.END
+
+
+def _telegram_user(user: User) -> str:
+    username = f" @{user.username}" if user.username else ""
+    return f"{user.full_name}{username} ({user.id})"
 
 
 async def edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -349,6 +379,17 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data.clear()
     await query.edit_message_text(CANCELLED, reply_markup=keyboards.new_order())
     return ConversationHandler.END
+
+
+async def start_new_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    # Sent as a new message so the confirmed (or cancelled) order stays visible.
+    await context.bot.send_message(
+        update.effective_chat.id, CHOOSE_CATEGORY, reply_markup=keyboards.main_menu()
+    )
+    return MENU
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

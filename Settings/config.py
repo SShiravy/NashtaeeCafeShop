@@ -8,10 +8,13 @@ class Settings(BaseSettings):
         return cls.__instance
 
     # Telegram Bot
-    TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_CUSTOMER_BOT_TOKEN: str
+    TELEGRAM_ADMIN_BOT_TOKEN: str
+    TELEGRAM_ADMIN_ID: int
+    TELEGRAM_SUPPORT_ID: str
     TELEGRAM_REPORT_CHANNEL: str
     TELEGRAM_PROXY: str | None = None  # e.g. socks5://127.0.0.1:9050
-
+    
     # Database
     DB_NAME: str
 

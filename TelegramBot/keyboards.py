@@ -16,6 +16,7 @@ CHECKOUT = "checkout"
 CONFIRM = "confirm"
 EDIT = "edit"
 CANCEL = "cancel"
+NEW_ORDER = "new_order"
 CATEGORY_PREFIX = "cat:"  # cat:<category_id>
 ITEM_PREFIX = "item:"  # item:<item_id>
 QTY_PREFIX = "qty:"  # qty:<item_id>:<quantity>
@@ -148,5 +149,5 @@ def confirm() -> InlineKeyboardMarkup:
 
 def new_order() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🍽 سفارش جدید", callback_data=MAIN)]]
+        [[InlineKeyboardButton("🍽 سفارش جدید", callback_data=NEW_ORDER)]]
     )

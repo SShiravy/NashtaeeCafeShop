@@ -41,6 +41,7 @@ def build_conversation() -> ConversationHandler:
         _callback(handlers.show_cart, keyboards.CART),
         _callback(handlers.clear_cart, keyboards.CART_CLEAR),
         _callback(handlers.checkout, keyboards.CHECKOUT),
+        _callback(handlers.start_new_order, keyboards.NEW_ORDER),
     ]
     return ConversationHandler(
         entry_points=[CommandHandler("start", handlers.start), *navigation],
@@ -79,11 +80,15 @@ async def _set_commands(app: Application) -> None:
     )
 
 
-def build_application(token: str, proxy: str | None = None) -> Application:
+def build_application(
+    token: str, admin_id: int | str, proxy: str | None = None
+) -> Application:
+    """admin_id: chat that receives every confirmed order."""
     builder = Application.builder().token(token).post_init(_set_commands)
     if proxy:
         builder = builder.proxy(proxy).get_updates_proxy(proxy)
     app = builder.build()
+    app.bot_data["admin_id"] = admin_id
 
     app.add_handler(build_conversation())
     # Reached only when the conversation didn't handle the update.

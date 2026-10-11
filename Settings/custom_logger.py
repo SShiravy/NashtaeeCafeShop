@@ -156,7 +156,7 @@ if __name__ == "__main__":
             name="root",
             log_file_name="test",
             telegram_channel=settings.TELEGRAM_REPORT_CHANNEL,
-            telegram_token=settings.TELEGRAM_BOT_TOKEN,
+            telegram_token=settings.TELEGRAM_CUSTOMER_BOT_TOKEN,
         )
     )
     logger.debug("mio")
