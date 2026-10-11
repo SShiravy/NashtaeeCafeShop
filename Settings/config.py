@@ -9,7 +9,8 @@ class Settings(BaseSettings):
 
     # Telegram Bot
     TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_REPORT_CHANNEL: int
+    TELEGRAM_REPORT_CHANNEL: str
+    TELEGRAM_PROXY: str | None = None  # e.g. socks5://127.0.0.1:9050
 
     # Database
     DB_NAME: str
