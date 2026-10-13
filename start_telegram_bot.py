@@ -18,6 +18,7 @@ def main() -> None:
         settings.TELEGRAM_CUSTOMER_BOT_TOKEN,
         admin_id=settings.TELEGRAM_ADMIN_ID,
         proxy=settings.TELEGRAM_PROXY,
+        support_id=settings.TELEGRAM_SUPPORT_ID,
     ).run_polling()
 
 

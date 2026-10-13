@@ -852,6 +852,16 @@ async def expired_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/support: how to reach the cafe. Works mid-order without interrupting it."""
+    support_id = context.bot_data.get("support_id")
+    await update.message.reply_text(
+        f"📞 پشتیبانی ناشتایی:\n{support_id}"
+        if support_id
+        else "پشتیبانی در حال حاضر در دسترس نیست."
+    )
+
+
 async def use_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "لطفاً از دکمه‌ها استفاده کنید یا برای شروع /start را بزنید."

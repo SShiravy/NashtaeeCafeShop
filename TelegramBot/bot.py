@@ -201,6 +201,7 @@ def build_admin_conversation(admin_id: int) -> ConversationHandler:
 CUSTOMER_COMMANDS = [
     BotCommand("start", "شروع سفارش"),
     BotCommand("cancel", "لغو سفارش"),
+    BotCommand("support", "پشتیبانی"),
 ]
 
 
@@ -218,17 +219,22 @@ async def _set_commands(app: Application) -> None:
 
 
 def build_application(
-    token: str, admin_id: int | str, proxy: str | None = None
+    token: str, admin_id: int | str, proxy: str | None = None, support_id: str = ""
 ) -> Application:
-    """admin_id: chat that approves or rejects every order and manages products."""
+    """admin_id: chat that approves or rejects every order and manages products.
+    support_id: what /support sends customers, e.g. an @username.
+    """
     builder = Application.builder().token(token).post_init(_set_commands)
     if proxy:
         builder = builder.proxy(proxy).get_updates_proxy(proxy)
     app = builder.build()
     app.bot_data["admin_id"] = admin_id
+    app.bot_data["support_id"] = support_id
 
     app.add_handler(build_admin_conversation(int(admin_id)), group=-1)
     app.add_handler(build_conversation())
+    # The conversation doesn't handle /support, so it reaches this in any step.
+    app.add_handler(CommandHandler("support", handlers.support))
     app.add_handler(
         _callback(handlers.admin_confirm, keyboards.ADMIN_CONFIRM_PREFIX, prefix=True)
     )
