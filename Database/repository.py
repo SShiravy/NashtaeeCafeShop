@@ -2,7 +2,7 @@
 
 from dataclasses import asdict
 
-from sqlmodel import func, or_, select
+from sqlmodel import col, func, or_, select
 
 from Database.database import get_session
 from Database.tables import CustomerTable, OrderItemTable, OrderTable, ProductTable
@@ -125,6 +125,45 @@ def update_order_state(order_number: int, state: OrderState) -> Order | None:
         return row.to_model()
 
 
+def get_customer(chat_id: str) -> Customer | None:
+    with get_session() as session:
+        row = session.exec(
+            select(CustomerTable).where(CustomerTable.chat_id == chat_id)
+        ).first()
+        return row.to_model() if row else None
+
+
+def save_customer(customer: Customer) -> None:
+    """Add the customer, or update name and phone of the one with the same chat_id."""
+    with get_session() as session:
+        row = session.exec(
+            select(CustomerTable).where(CustomerTable.chat_id == customer.chat_id)
+        ).first()
+        if row is None:
+            row = CustomerTable.from_model(customer)
+        else:
+            row.name = customer.name
+            row.phone = customer.phone
+        session.add(row)
+        session.commit()
+
+
+def get_addresses(chat_id: str, limit: int = 10) -> list[str]:
+    """Distinct delivery addresses of the customer's orders, most recently used first."""
+    with get_session() as session:
+        rows = session.exec(
+            select(OrderTable.address)
+            .join(CustomerTable)
+            .where(
+                CustomerTable.chat_id == chat_id, col(OrderTable.address).is_not(None)
+            )
+            .group_by(OrderTable.address)
+            .order_by(func.max(OrderTable.id).desc())
+            .limit(limit)
+        ).all()
+        return list(rows)
+
+
 def create_order(
     items: list[Item],
     customer: Customer,
@@ -149,6 +188,9 @@ def create_order(
             address=address,
             state=state,
         )
+        # Added before the product lookups below flush the session, so the new
+        # rows linked to existing customer/product rows are already part of it.
+        session.add(order_row)
         for item in items:
             product_row = session.exec(
                 select(ProductTable).where(ProductTable.name == item.product.name)
@@ -157,7 +199,6 @@ def create_order(
                 OrderItemTable(product=product_row, count=item.count)
             )
 
-        session.add(order_row)
         session.commit()
         session.refresh(order_row)
         return order_row.to_model()

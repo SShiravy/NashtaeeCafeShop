@@ -51,6 +51,9 @@ def build_conversation() -> ConversationHandler:
         _callback(handlers.clear_cart, keyboards.CART_CLEAR),
         _callback(handlers.checkout, keyboards.CHECKOUT),
         _callback(handlers.start_new_order, keyboards.NEW_ORDER),
+        _callback(handlers.show_profile, keyboards.PROFILE),
+        _callback(handlers.ask_new_name, keyboards.PROFILE_NAME),
+        _callback(handlers.ask_new_phone, keyboards.PROFILE_PHONE),
     ]
     return ConversationHandler(
         entry_points=[CommandHandler("start", handlers.start), *navigation],
@@ -66,15 +69,29 @@ def build_conversation() -> ConversationHandler:
                     prefix=True,
                 )
             ],
-            handlers.NAME: [MessageHandler(TEXT, handlers.get_name)],
+            handlers.NAME: [
+                MessageHandler(TEXT, handlers.get_name),
+                _callback(handlers.back_to_summary, keyboards.SUMMARY),
+            ],
             handlers.PHONE: [
                 MessageHandler(filters.CONTACT | TEXT, handlers.get_phone)
             ],
-            handlers.ADDRESS: [MessageHandler(TEXT, handlers.get_address)],
+            handlers.ADDRESS: [
+                MessageHandler(TEXT, handlers.get_address),
+                _callback(
+                    handlers.choose_address, keyboards.ADDRESS_PREFIX, prefix=True
+                ),
+                _callback(handlers.ask_new_address, keyboards.ADDRESS_NEW),
+                _callback(handlers.show_addresses, keyboards.ADDRESS_LIST),
+            ],
             handlers.CONFIRM: [
                 _callback(handlers.confirm_order, keyboards.CONFIRM),
                 _callback(handlers.edit_order, keyboards.EDIT),
                 _callback(handlers.cancel_order, keyboards.CANCEL),
+                _callback(handlers.edit_receive_method, keyboards.EDIT_RECEIVE),
+                _callback(handlers.ask_new_name, keyboards.EDIT_NAME),
+                _callback(handlers.ask_new_phone, keyboards.EDIT_PHONE),
+                _callback(handlers.back_to_summary, keyboards.SUMMARY),
             ],
         },
         fallbacks=[CommandHandler("cancel", handlers.cancel_command)],

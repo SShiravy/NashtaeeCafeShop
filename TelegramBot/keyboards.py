@@ -17,6 +17,16 @@ CONFIRM = "confirm"
 EDIT = "edit"
 CANCEL = "cancel"
 NEW_ORDER = "new_order"
+PROFILE = "profile"
+PROFILE_NAME = "profile_name"
+PROFILE_PHONE = "profile_phone"
+SUMMARY = "summary"  # back to the order summary
+EDIT_RECEIVE = "edit_receive"
+EDIT_NAME = "edit_name"
+EDIT_PHONE = "edit_phone"
+ADDRESS_NEW = "address_new"
+ADDRESS_LIST = "address_list"
+ADDRESS_PREFIX = "address:"  # address:<index in the list shown to the customer>
 CATEGORY_PREFIX = "cat:"  # cat:<ProductCategory.name>
 ITEM_PREFIX = "item:"  # item:<Product.name>
 QTY_PREFIX = "qty:"  # qty:<Product.name>:<quantity>
@@ -27,6 +37,9 @@ ADMIN_CANCEL_PREFIX = "admin_cancel:"  # admin_cancel:<pending order id>
 
 PICKUP = "pickup"
 DELIVERY = "delivery"
+
+# A reply-keyboard button, so it arrives as a text message.
+CANCEL_TEXT = "🔙 انصراف"
 
 
 def main_menu(categories: list[ProductCategory]) -> InlineKeyboardMarkup:
@@ -39,6 +52,7 @@ def main_menu(categories: list[ProductCategory]) -> InlineKeyboardMarkup:
         for category in categories
     ]
     rows.append([InlineKeyboardButton("🛒 سبد خرید", callback_data=CART)])
+    rows.append([InlineKeyboardButton("👤 اطلاعات من", callback_data=PROFILE)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -128,9 +142,13 @@ def receive_method() -> InlineKeyboardMarkup:
     )
 
 
-def contact_request() -> ReplyKeyboardMarkup:
+def contact_request(cancel: bool = False) -> ReplyKeyboardMarkup:
+    """cancel adds a CANCEL_TEXT button, for changing a phone number already saved."""
+    rows = [[KeyboardButton("📱 ارسال شماره تماس", request_contact=True)]]
+    if cancel:
+        rows.append([KeyboardButton(CANCEL_TEXT)])
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 ارسال شماره تماس", request_contact=True)]],
+        rows,
         resize_keyboard=True,
         one_time_keyboard=True,
         input_field_placeholder="09xxxxxxxxx",
@@ -168,3 +186,51 @@ def admin_decision(pending_id: str) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def back(callback_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔙 بازگشت", callback_data=callback_data)]]
+    )
+
+
+def edit_menu() -> InlineKeyboardMarkup:
+    """What ✏️ on the order summary can change."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📦 روش دریافت و آدرس", callback_data=EDIT_RECEIVE)],
+            [
+                InlineKeyboardButton("✏️ تغییر نام", callback_data=EDIT_NAME),
+                InlineKeyboardButton("📞 تغییر شماره", callback_data=EDIT_PHONE),
+            ],
+            [InlineKeyboardButton("🔙 بازگشت به خلاصه سفارش", callback_data=SUMMARY)],
+        ]
+    )
+
+
+def addresses(addresses: list[str]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"📍 {address if len(address) <= 40 else address[:39] + '…'}",
+                callback_data=f"{ADDRESS_PREFIX}{index}",
+            )
+        ]
+        for index, address in enumerate(addresses)
+    ]
+    rows.append([InlineKeyboardButton("➕ آدرس جدید", callback_data=ADDRESS_NEW)])
+    rows.append([InlineKeyboardButton("🔙 روش دریافت", callback_data=CHECKOUT)])
+    return InlineKeyboardMarkup(rows)
+
+
+def profile(known: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if known:
+        rows.append(
+            [
+                InlineKeyboardButton("✏️ تغییر نام", callback_data=PROFILE_NAME),
+                InlineKeyboardButton("📞 تغییر شماره", callback_data=PROFILE_PHONE),
+            ]
+        )
+    rows.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data=MAIN)])
+    return InlineKeyboardMarkup(rows)

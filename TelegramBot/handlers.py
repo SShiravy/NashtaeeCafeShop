@@ -1,6 +1,6 @@
 import logging
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from telegram import (
@@ -34,6 +34,10 @@ MENU, CUSTOM_QTY, RECEIVE, NAME, PHONE, ADDRESS, CONFIRM = range(7)
 
 MAX_QTY = 99
 
+# user_data key: where to go after the customer types a new name or phone,
+# "summary" or "profile". Unset while a first-time customer is entering them.
+INFO_RETURN = "info_return"
+
 
 @dataclass(slots=True, frozen=True)
 class PendingOrder:
@@ -47,9 +51,10 @@ class PendingOrder:
 
 
 CHOOSE_CATEGORY = "لطفاً دسته موردنظر را انتخاب کنید:"
-ASK_NAME = "لطفاً نام و نام خانوادگی خود را وارد کنید:"
+ASK_NAME = "لطفا نام کامل خود یا شرکت خود را وارد کنید:"
 ASK_PHONE = "شماره تماس را وارد کنید یا از دکمه زیر استفاده کنید:"
 ASK_RECEIVE = "📦 روش دریافت سفارش را انتخاب کنید:"
+ASK_ADDRESS = "📍 آدرس کامل محل تحویل را وارد کنید:"
 CANCELLED = "❌ سفارش لغو شد."
 
 
@@ -109,8 +114,22 @@ def _customer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Customer:
     return Customer(
         name=context.user_data["name"],
         phone=context.user_data["phone"],
-        chat_id=str(update.effective_chat.id),
+        chat_id=_chat_id(update),
     )
+
+
+def _chat_id(update: Update) -> str:
+    return str(update.effective_chat.id)
+
+
+async def _send(
+    update: Update, text: str, markup: InlineKeyboardMarkup | None = None
+) -> None:
+    """Edit the message whose button was pressed, or reply to a typed message."""
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=markup)
+    else:
+        await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 def _address(context: ContextTypes.DEFAULT_TYPE) -> str | None:
@@ -166,10 +185,12 @@ def _main_menu() -> InlineKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    name = update.effective_user.first_name or "دوست ناشتایی"
+    customer = repository.get_customer(_chat_id(update))
+    name = customer.name if customer else update.effective_user.first_name
     # Also removes a contact keyboard left over from an unfinished order.
     await update.message.reply_text(
-        f"سلام {name} 🌿\nبه ناشتایی خوش آمدید.", reply_markup=ReplyKeyboardRemove()
+        f"سلام {name or 'دوست ناشتایی'} 🌿\nبه ناشتایی خوش آمدید.",
+        reply_markup=ReplyKeyboardRemove(),
     )
     await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
     return MENU
@@ -317,9 +338,17 @@ async def choose_receive_method(
         return RECEIVE
     context.user_data["delivery"] = method
     await query.answer()
-    title = "🚚 ارسال" if method == keyboards.DELIVERY else "🏪 دریافت حضوری"
-    await query.edit_message_text(f"{title}\n\n{ASK_NAME}")
-    return NAME
+    customer = repository.get_customer(_chat_id(update))
+    if customer is None:
+        # First time: ask name and phone once, they're remembered afterwards.
+        context.user_data.pop(INFO_RETURN, None)
+        title = "🚚 ارسال" if method == keyboards.DELIVERY else "🏪 دریافت حضوری"
+        await query.edit_message_text(f"{title}\n\n{ASK_NAME}")
+        return NAME
+    context.user_data.update(name=customer.name, phone=customer.phone)
+    if method == keyboards.DELIVERY:
+        return await _ask_address(update, context)
+    return await _show_summary(update, context)
 
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -327,6 +356,8 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not 2 <= len(value) <= 64:
         await update.message.reply_text("لطفاً نام معتبر وارد کنید.")
         return NAME
+    if context.user_data.get(INFO_RETURN):
+        return await _update_info(update, context, name=value)
     context.user_data["name"] = value
     await update.message.reply_text(ASK_PHONE, reply_markup=keyboards.contact_request())
     return PHONE
@@ -334,26 +365,75 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.message
+    editing = bool(context.user_data.get(INFO_RETURN))
+    if editing and message.text == keyboards.CANCEL_TEXT:
+        await message.reply_text(
+            "تغییری ایجاد نشد.", reply_markup=ReplyKeyboardRemove()
+        )
+        return await _back_from_info(update, context)
     phone = normalize_phone(
         message.contact.phone_number if message.contact else message.text
     )
     if phone is None:
         await message.reply_text(
             "شماره تماس معتبر نیست. دوباره وارد کنید:",
-            reply_markup=keyboards.contact_request(),
+            reply_markup=keyboards.contact_request(cancel=editing),
         )
         return PHONE
+    if editing:
+        return await _update_info(update, context, phone=phone)
     context.user_data["phone"] = phone
-    if context.user_data["delivery"] == keyboards.DELIVERY:
-        await message.reply_text(
-            "آدرس کامل محل تحویل را وارد کنید:", reply_markup=ReplyKeyboardRemove()
-        )
-        return ADDRESS
+    repository.save_customer(_customer(update, context))
     # An inline keyboard and ReplyKeyboardRemove can't share one message.
     await message.reply_text(
-        "✅ شماره تماس ثبت شد.", reply_markup=ReplyKeyboardRemove()
+        "✅ نام و شماره شما ذخیره شد و در سفارش‌های بعدی دوباره پرسیده نمی‌شود."
+        "\n(از «👤 اطلاعات من» در منوی اصلی می‌توانید آن‌ها را تغییر دهید.)",
+        reply_markup=ReplyKeyboardRemove(),
     )
+    if context.user_data["delivery"] == keyboards.DELIVERY:
+        return await _ask_address(update, context)
     return await _show_summary(update, context)
+
+
+async def _ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Saved addresses as buttons, if any; a new one can always be typed."""
+    addresses = repository.get_addresses(_chat_id(update))
+    context.user_data["addresses"] = addresses
+    if not addresses:
+        await _send(update, ASK_ADDRESS)
+    else:
+        await _send(
+            update,
+            "📍 آدرس تحویل را انتخاب کنید، یا آدرس جدید را بنویسید:",
+            keyboards.addresses(addresses),
+        )
+    return ADDRESS
+
+
+async def choose_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    index = query.data.removeprefix(keyboards.ADDRESS_PREFIX)
+    addresses = context.user_data.get("addresses", [])
+    if not index.isdigit() or int(index) >= len(addresses):
+        await query.answer("این آدرس دیگر در دسترس نیست.", show_alert=True)
+        return ADDRESS
+    context.user_data["address"] = addresses[int(index)]
+    await query.answer()
+    return await _show_summary(update, context)
+
+
+async def ask_new_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        ASK_ADDRESS, reply_markup=keyboards.back(keyboards.ADDRESS_LIST)
+    )
+    return ADDRESS
+
+
+async def show_addresses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    return await _ask_address(update, context)
 
 
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -374,8 +454,111 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     text = "\n".join(
         ["📋 خلاصه سفارش", "", *summary, "", *_estimate_lines(minutes, address)]
     )
-    await update.effective_message.reply_text(text, reply_markup=keyboards.confirm())
+    await _send(update, text, keyboards.confirm())
     return CONFIRM
+
+
+# ---------- saved name and phone ----------
+
+
+def _profile_view(chat_id: str) -> tuple[str, InlineKeyboardMarkup]:
+    customer = repository.get_customer(chat_id)
+    if customer is None:
+        return (
+            (
+                "👤 اطلاعات من\n\nهنوز اطلاعاتی ثبت نشده است."
+                "\nنام و شماره شما در اولین سفارش ذخیره می‌شود."
+            ),
+            keyboards.profile(known=False),
+        )
+    lines = [
+        "👤 اطلاعات من",
+        "",
+        f"👤 نام: {customer.name}",
+        f"📞 تماس: {customer.phone}",
+    ]
+    if addresses := repository.get_addresses(chat_id):
+        lines += ["", "📍 آدرس‌های قبلی:", *(f"• {address}" for address in addresses)]
+    return "\n".join(lines), keyboards.profile(known=True)
+
+
+async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop(INFO_RETURN, None)
+    text, markup = _profile_view(_chat_id(update))
+    await query.edit_message_text(text, reply_markup=markup)
+    return MENU
+
+
+def _info_target(query_data: str) -> str:
+    from_summary = query_data in (keyboards.EDIT_NAME, keyboards.EDIT_PHONE)
+    return "summary" if from_summary else "profile"
+
+
+async def ask_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """✏️ from the profile or from the order summary."""
+    query = update.callback_query
+    customer = repository.get_customer(_chat_id(update))
+    if customer is None:
+        await query.answer("هنوز اطلاعاتی ثبت نشده است.", show_alert=True)
+        return MENU
+    target = _info_target(query.data)
+    context.user_data[INFO_RETURN] = target
+    await query.answer()
+    back = keyboards.SUMMARY if target == "summary" else keyboards.PROFILE
+    await query.edit_message_text(
+        f"✏️ نام جدید را وارد کنید:\n(نام فعلی: {customer.name})",
+        reply_markup=keyboards.back(back),
+    )
+    return NAME
+
+
+async def ask_new_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """📞 from the profile or from the order summary."""
+    query = update.callback_query
+    customer = repository.get_customer(_chat_id(update))
+    if customer is None:
+        await query.answer("هنوز اطلاعاتی ثبت نشده است.", show_alert=True)
+        return MENU
+    context.user_data[INFO_RETURN] = _info_target(query.data)
+    await query.answer()
+    # The contact button needs a reply keyboard, which only a new message can carry.
+    await query.edit_message_reply_markup(None)
+    await context.bot.send_message(
+        update.effective_chat.id,
+        f"📞 شماره جدید را وارد کنید یا از دکمه زیر استفاده کنید:"
+        f"\n(شماره فعلی: {customer.phone})",
+        reply_markup=keyboards.contact_request(cancel=True),
+    )
+    return PHONE
+
+
+async def _update_info(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, **changes: str
+) -> int:
+    """Save a new name or phone, then go back to where it was changed from."""
+    customer = repository.get_customer(_chat_id(update))
+    if customer is None:
+        context.user_data.pop(INFO_RETURN, None)
+        await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
+        return MENU
+    customer = replace(customer, **changes)
+    repository.save_customer(customer)
+    context.user_data.update(name=customer.name, phone=customer.phone)
+    what = "نام" if "name" in changes else "شماره تماس"
+    await update.message.reply_text(
+        f"✅ {what} به‌روزرسانی شد.", reply_markup=ReplyKeyboardRemove()
+    )
+    return await _back_from_info(update, context)
+
+
+async def _back_from_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if context.user_data.pop(INFO_RETURN, None) == "summary":
+        return await _show_summary(update, context)
+    text, markup = _profile_view(_chat_id(update))
+    await _send(update, text, markup)
+    return MENU
 
 
 # ---------- confirmation ----------
@@ -440,10 +623,33 @@ def _telegram_user(user: User) -> str:
 
 
 async def edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """✏️ on the summary: choose what to change."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "✏️ کدام مورد را می‌خواهید تغییر دهید؟", reply_markup=keyboards.edit_menu()
+    )
+    return CONFIRM
+
+
+async def edit_receive_method(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(ASK_RECEIVE, reply_markup=keyboards.receive_method())
     return RECEIVE
+
+
+async def back_to_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    context.user_data.pop(INFO_RETURN, None)
+    data = context.user_data
+    if not ({"delivery", "name", "phone"} <= data.keys() and _cart(context)):
+        await query.answer("این دکمه دیگر فعال نیست.", show_alert=True)
+        return MENU
+    await query.answer()
+    return await _show_summary(update, context)
 
 
 async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
