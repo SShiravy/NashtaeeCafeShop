@@ -6,3 +6,4 @@ class Customer:
     name: str
     phone: str
     chat_id: str
+    company: str = ""  # empty for customers saved before it was asked

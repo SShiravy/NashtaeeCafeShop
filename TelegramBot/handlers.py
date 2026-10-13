@@ -30,13 +30,15 @@ from TelegramBot.utils import (
 log = logging.getLogger(__name__)
 
 # Conversation states
-MENU, CUSTOM_QTY, RECEIVE, NAME, PHONE, ADDRESS, CONFIRM = range(7)
+MENU, CUSTOM_QTY, RECEIVE, NAME, PHONE, ADDRESS, CONFIRM, COMPANY = range(8)
 
 MAX_QTY = 99
 
-# user_data key: where to go after the customer types a new name or phone,
-# "summary" or "profile". Unset while a first-time customer is entering them.
+# user_data key: where to go after the customer types a new name, company or
+# phone: "summary", "profile" or "checkout" (carry on to the address/summary).
+# Unset while a first-time customer is entering them.
 INFO_RETURN = "info_return"
+INFO_LABELS = {"name": "نام", "company": "نام شرکت", "phone": "شماره تماس"}
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,7 +53,8 @@ class PendingOrder:
 
 
 CHOOSE_CATEGORY = "لطفاً دسته موردنظر را انتخاب کنید:"
-ASK_NAME = "لطفا نام کامل خود یا شرکت خود را وارد کنید:"
+ASK_NAME = "لطفاً نام و نام خانوادگی خود را وارد کنید:"
+ASK_COMPANY = "🏢 نام شرکت خود را وارد کنید:"
 ASK_PHONE = "شماره تماس را وارد کنید یا از دکمه زیر استفاده کنید:"
 ASK_RECEIVE = "📦 روش دریافت سفارش را انتخاب کنید:"
 ASK_ADDRESS = "📍 آدرس کامل محل تحویل را وارد کنید:"
@@ -115,6 +118,7 @@ def _customer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Customer:
         name=context.user_data["name"],
         phone=context.user_data["phone"],
         chat_id=_chat_id(update),
+        company=context.user_data["company"],
     )
 
 
@@ -142,8 +146,10 @@ def _address(context: ContextTypes.DEFAULT_TYPE) -> str | None:
 def order_summary(
     customer: Customer, items: list[Item], address: str | None
 ) -> list[str]:
-    lines = [
-        f"👤 نام: {customer.name}",
+    lines = [f"👤 نام: {customer.name}"]
+    if customer.company:
+        lines.append(f"🏢 شرکت: {customer.company}")
+    lines += [
         f"📞 تماس: {customer.phone}",
         f"📦 دریافت: {'ارسال' if address else 'حضوری'}",
     ]
@@ -340,13 +346,29 @@ async def choose_receive_method(
     await query.answer()
     customer = repository.get_customer(_chat_id(update))
     if customer is None:
-        # First time: ask name and phone once, they're remembered afterwards.
+        # First time: ask name, company and phone once; they're remembered.
         context.user_data.pop(INFO_RETURN, None)
         title = "🚚 ارسال" if method == keyboards.DELIVERY else "🏪 دریافت حضوری"
         await query.edit_message_text(f"{title}\n\n{ASK_NAME}")
         return NAME
-    context.user_data.update(name=customer.name, phone=customer.phone)
-    if method == keyboards.DELIVERY:
+    _remember(context, customer)
+    if not customer.company:
+        # Saved before the company was asked for: ask just that, then carry on.
+        context.user_data[INFO_RETURN] = "checkout"
+        await query.edit_message_text(ASK_COMPANY)
+        return COMPANY
+    return await _continue_checkout(update, context)
+
+
+def _remember(context: ContextTypes.DEFAULT_TYPE, customer: Customer) -> None:
+    context.user_data.update(
+        name=customer.name, company=customer.company, phone=customer.phone
+    )
+
+
+async def _continue_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """With the customer's details known: the address for delivery, else the summary."""
+    if context.user_data["delivery"] == keyboards.DELIVERY:
         return await _ask_address(update, context)
     return await _show_summary(update, context)
 
@@ -359,6 +381,18 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if context.user_data.get(INFO_RETURN):
         return await _update_info(update, context, name=value)
     context.user_data["name"] = value
+    await update.message.reply_text(ASK_COMPANY)
+    return COMPANY
+
+
+async def get_company(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    value = update.message.text.strip()
+    if not 2 <= len(value) <= 100:
+        await update.message.reply_text("لطفاً نام شرکت را وارد کنید (۲ تا ۱۰۰ حرف).")
+        return COMPANY
+    if context.user_data.get(INFO_RETURN):
+        return await _update_info(update, context, company=value)
+    context.user_data["company"] = value
     await update.message.reply_text(ASK_PHONE, reply_markup=keyboards.contact_request())
     return PHONE
 
@@ -386,13 +420,11 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     repository.save_customer(_customer(update, context))
     # An inline keyboard and ReplyKeyboardRemove can't share one message.
     await message.reply_text(
-        "✅ نام و شماره شما ذخیره شد و در سفارش‌های بعدی دوباره پرسیده نمی‌شود."
+        "✅ نام، شرکت و شماره شما ذخیره شد و در سفارش‌های بعدی دوباره پرسیده نمی‌شود."
         "\n(از «👤 اطلاعات من» در منوی اصلی می‌توانید آن‌ها را تغییر دهید.)",
         reply_markup=ReplyKeyboardRemove(),
     )
-    if context.user_data["delivery"] == keyboards.DELIVERY:
-        return await _ask_address(update, context)
-    return await _show_summary(update, context)
+    return await _continue_checkout(update, context)
 
 
 async def _ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -467,7 +499,7 @@ def _profile_view(chat_id: str) -> tuple[str, InlineKeyboardMarkup]:
         return (
             (
                 "👤 اطلاعات من\n\nهنوز اطلاعاتی ثبت نشده است."
-                "\nنام و شماره شما در اولین سفارش ذخیره می‌شود."
+                "\nنام، شرکت و شماره شما در اولین سفارش ذخیره می‌شود."
             ),
             keyboards.profile(known=False),
         )
@@ -475,6 +507,7 @@ def _profile_view(chat_id: str) -> tuple[str, InlineKeyboardMarkup]:
         "👤 اطلاعات من",
         "",
         f"👤 نام: {customer.name}",
+        f"🏢 شرکت: {customer.company or 'ثبت نشده'}",
         f"📞 تماس: {customer.phone}",
     ]
     if addresses := repository.get_addresses(chat_id):
@@ -492,12 +525,27 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 def _info_target(query_data: str) -> str:
-    from_summary = query_data in (keyboards.EDIT_NAME, keyboards.EDIT_PHONE)
+    from_summary = query_data in (
+        keyboards.EDIT_NAME,
+        keyboards.EDIT_COMPANY,
+        keyboards.EDIT_PHONE,
+    )
     return "summary" if from_summary else "profile"
 
 
 async def ask_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """✏️ from the profile or from the order summary."""
+    return await _ask_new_text(update, context, "name", NAME)
+
+
+async def ask_new_company(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """🏢 from the profile or from the order summary."""
+    return await _ask_new_text(update, context, "company", COMPANY)
+
+
+async def _ask_new_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, field: str, state: int
+) -> int:
     query = update.callback_query
     customer = repository.get_customer(_chat_id(update))
     if customer is None:
@@ -507,11 +555,13 @@ async def ask_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data[INFO_RETURN] = target
     await query.answer()
     back = keyboards.SUMMARY if target == "summary" else keyboards.PROFILE
+    label = INFO_LABELS[field]
+    current = getattr(customer, field) or "ثبت نشده"
     await query.edit_message_text(
-        f"✏️ نام جدید را وارد کنید:\n(نام فعلی: {customer.name})",
+        f"✏️ {label} جدید را وارد کنید:\n({label} فعلی: {current})",
         reply_markup=keyboards.back(back),
     )
-    return NAME
+    return state
 
 
 async def ask_new_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -537,7 +587,7 @@ async def ask_new_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def _update_info(
     update: Update, context: ContextTypes.DEFAULT_TYPE, **changes: str
 ) -> int:
-    """Save a new name or phone, then go back to where it was changed from."""
+    """Save a new name, company or phone, then go back to where it was changed from."""
     customer = repository.get_customer(_chat_id(update))
     if customer is None:
         context.user_data.pop(INFO_RETURN, None)
@@ -545,17 +595,22 @@ async def _update_info(
         return MENU
     customer = replace(customer, **changes)
     repository.save_customer(customer)
-    context.user_data.update(name=customer.name, phone=customer.phone)
-    what = "نام" if "name" in changes else "شماره تماس"
+    _remember(context, customer)
+    first_time = context.user_data.get(INFO_RETURN) == "checkout"
     await update.message.reply_text(
-        f"✅ {what} به‌روزرسانی شد.", reply_markup=ReplyKeyboardRemove()
+        f"✅ {INFO_LABELS[next(iter(changes))]}"
+        f" {'ثبت شد' if first_time else 'به‌روزرسانی شد'}.",
+        reply_markup=ReplyKeyboardRemove(),
     )
     return await _back_from_info(update, context)
 
 
 async def _back_from_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if context.user_data.pop(INFO_RETURN, None) == "summary":
+    target = context.user_data.pop(INFO_RETURN, None)
+    if target == "summary":
         return await _show_summary(update, context)
+    if target == "checkout":
+        return await _continue_checkout(update, context)
     text, markup = _profile_view(_chat_id(update))
     await _send(update, text, markup)
     return MENU
@@ -645,7 +700,7 @@ async def back_to_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     context.user_data.pop(INFO_RETURN, None)
     data = context.user_data
-    if not ({"delivery", "name", "phone"} <= data.keys() and _cart(context)):
+    if not ({"delivery", "name", "company", "phone"} <= data.keys() and _cart(context)):
         await query.answer("این دکمه دیگر فعال نیست.", show_alert=True)
         return MENU
     await query.answer()

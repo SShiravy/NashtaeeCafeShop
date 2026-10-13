@@ -53,6 +53,7 @@ def build_conversation() -> ConversationHandler:
         _callback(handlers.start_new_order, keyboards.NEW_ORDER),
         _callback(handlers.show_profile, keyboards.PROFILE),
         _callback(handlers.ask_new_name, keyboards.PROFILE_NAME),
+        _callback(handlers.ask_new_company, keyboards.PROFILE_COMPANY),
         _callback(handlers.ask_new_phone, keyboards.PROFILE_PHONE),
     ]
     return ConversationHandler(
@@ -73,6 +74,10 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(TEXT, handlers.get_name),
                 _callback(handlers.back_to_summary, keyboards.SUMMARY),
             ],
+            handlers.COMPANY: [
+                MessageHandler(TEXT, handlers.get_company),
+                _callback(handlers.back_to_summary, keyboards.SUMMARY),
+            ],
             handlers.PHONE: [
                 MessageHandler(filters.CONTACT | TEXT, handlers.get_phone)
             ],
@@ -90,6 +95,7 @@ def build_conversation() -> ConversationHandler:
                 _callback(handlers.cancel_order, keyboards.CANCEL),
                 _callback(handlers.edit_receive_method, keyboards.EDIT_RECEIVE),
                 _callback(handlers.ask_new_name, keyboards.EDIT_NAME),
+                _callback(handlers.ask_new_company, keyboards.EDIT_COMPANY),
                 _callback(handlers.ask_new_phone, keyboards.EDIT_PHONE),
                 _callback(handlers.back_to_summary, keyboards.SUMMARY),
             ],

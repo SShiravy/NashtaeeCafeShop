@@ -14,6 +14,7 @@ class CustomerTable(SQLModel, table=True):
     name: str
     phone: str = Field(index=True)
     chat_id: str = Field(unique=True, index=True)
+    company: str = Field(default="")
 
     orders: list["OrderTable"] = Relationship(back_populates="customer")
 
@@ -23,6 +24,7 @@ class CustomerTable(SQLModel, table=True):
             name=customer.name,
             phone=customer.phone,
             chat_id=customer.chat_id,
+            company=customer.company,
         )
 
     def to_model(self) -> Customer:
@@ -30,6 +32,7 @@ class CustomerTable(SQLModel, table=True):
             name=self.name,
             phone=self.phone,
             chat_id=self.chat_id,
+            company=self.company,
         )
 
 

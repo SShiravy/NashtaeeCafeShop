@@ -19,10 +19,12 @@ CANCEL = "cancel"
 NEW_ORDER = "new_order"
 PROFILE = "profile"
 PROFILE_NAME = "profile_name"
+PROFILE_COMPANY = "profile_company"
 PROFILE_PHONE = "profile_phone"
 SUMMARY = "summary"  # back to the order summary
 EDIT_RECEIVE = "edit_receive"
 EDIT_NAME = "edit_name"
+EDIT_COMPANY = "edit_company"
 EDIT_PHONE = "edit_phone"
 ADDRESS_NEW = "address_new"
 ADDRESS_LIST = "address_list"
@@ -201,8 +203,9 @@ def edit_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📦 روش دریافت و آدرس", callback_data=EDIT_RECEIVE)],
             [
                 InlineKeyboardButton("✏️ تغییر نام", callback_data=EDIT_NAME),
-                InlineKeyboardButton("📞 تغییر شماره", callback_data=EDIT_PHONE),
+                InlineKeyboardButton("🏢 تغییر شرکت", callback_data=EDIT_COMPANY),
             ],
+            [InlineKeyboardButton("📞 تغییر شماره", callback_data=EDIT_PHONE)],
             [InlineKeyboardButton("🔙 بازگشت به خلاصه سفارش", callback_data=SUMMARY)],
         ]
     )
@@ -229,8 +232,11 @@ def profile(known: bool) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton("✏️ تغییر نام", callback_data=PROFILE_NAME),
-                InlineKeyboardButton("📞 تغییر شماره", callback_data=PROFILE_PHONE),
+                InlineKeyboardButton("🏢 تغییر شرکت", callback_data=PROFILE_COMPANY),
             ]
+        )
+        rows.append(
+            [InlineKeyboardButton("📞 تغییر شماره", callback_data=PROFILE_PHONE)]
         )
     rows.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data=MAIN)])
     return InlineKeyboardMarkup(rows)

@@ -134,7 +134,7 @@ def get_customer(chat_id: str) -> Customer | None:
 
 
 def save_customer(customer: Customer) -> None:
-    """Add the customer, or update name and phone of the one with the same chat_id."""
+    """Add the customer, or update the details of the one with the same chat_id."""
     with get_session() as session:
         row = session.exec(
             select(CustomerTable).where(CustomerTable.chat_id == customer.chat_id)
@@ -144,6 +144,7 @@ def save_customer(customer: Customer) -> None:
         else:
             row.name = customer.name
             row.phone = customer.phone
+            row.company = customer.company
         session.add(row)
         session.commit()
 
@@ -180,6 +181,7 @@ def create_order(
         else:
             customer_row.name = customer.name
             customer_row.phone = customer.phone
+            customer_row.company = customer.company
 
         last_number = session.exec(select(func.max(OrderTable.order_number))).one()
         order_row = OrderTable(

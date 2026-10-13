@@ -1,7 +1,4 @@
-"""Fill an empty products table with the initial menu: python -m Database.seed"""
-
 from sqlmodel import select
-
 from Database.database import create_db_and_tables, get_session
 from Database.tables import ProductTable
 from Models.menu import Product, ProductCategory
