@@ -1,9 +1,12 @@
+import logging
 from re import escape
 from warnings import filterwarnings
 
-from telegram import BotCommand
+from telegram import BotCommand, BotCommandScopeChat, Update
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
@@ -14,6 +17,10 @@ from telegram.warnings import PTBUserWarning
 
 from TelegramBot import handlers
 from TelegramBot import keyboards
+from TelegramBot.PanelAdmin import handlers as admin
+from TelegramBot.PanelAdmin import keyboards as admin_keyboards
+
+log = logging.getLogger(__name__)
 
 # Expected: with per_message=False, callback queries are tracked per chat/user, which is what we want.
 filterwarnings("ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
@@ -21,10 +28,12 @@ filterwarnings("ignore", message=r".*CallbackQueryHandler", category=PTBUserWarn
 TEXT = filters.TEXT & ~filters.COMMAND
 
 
+def _pattern(data: str, prefix: bool) -> str:
+    return f"^{escape(data)}" + ("" if prefix else "$")
+
+
 def _callback(callback, data: str, prefix: bool = False) -> CallbackQueryHandler:
-    return CallbackQueryHandler(
-        callback, pattern=f"^{escape(data)}" + ("" if prefix else "$")
-    )
+    return CallbackQueryHandler(callback, pattern=_pattern(data, prefix))
 
 
 def build_conversation() -> ConversationHandler:
@@ -73,22 +82,117 @@ def build_conversation() -> ConversationHandler:
     )
 
 
-async def _set_commands(app: Application) -> None:
-    await app.bot.set_my_commands(
-        [BotCommand("start", "شروع سفارش"), BotCommand("cancel", "لغو سفارش")]
+class _AdminCallbackHandler(CallbackQueryHandler):
+    """A CallbackQueryHandler that only matches buttons pressed in the admin chat."""
+
+    def __init__(self, admin_id: int, callback, pattern: str):
+        super().__init__(callback, pattern=pattern)
+        self.admin_id = admin_id
+
+    def check_update(self, update: object):
+        if not isinstance(update, Update) or update.effective_chat is None:
+            return None
+        if update.effective_chat.id != self.admin_id:
+            return None
+        return super().check_update(update)
+
+
+def _stop_after(callback):
+    """Keep a handled admin update from also reaching the customer handlers."""
+
+    async def wrapper(update: Update, context) -> None:
+        raise ApplicationHandlerStop(await callback(update, context))
+
+    return wrapper
+
+
+def build_admin_conversation(admin_id: int) -> ConversationHandler:
+    """Product CRUD panel, opened with /admin; meant for handler group -1."""
+
+    def button(callback, data: str, prefix: bool = False) -> CallbackQueryHandler:
+        return _AdminCallbackHandler(
+            admin_id, _stop_after(callback), _pattern(data, prefix)
+        )
+
+    def text(callback) -> MessageHandler:
+        return MessageHandler(TEXT, _stop_after(callback))
+
+    # As on the customer side, navigation buttons are entry points so they work
+    # from every step; Cancel buttons on text prompts are navigation too.
+    navigation = [
+        CommandHandler(
+            "admin", _stop_after(admin.open_panel), filters=filters.Chat(admin_id)
+        ),
+        button(admin.show_panel, admin_keyboards.HOME),
+        button(admin.show_category, admin_keyboards.CATEGORY_PREFIX, prefix=True),
+        button(admin.show_product, admin_keyboards.PRODUCT_PREFIX, prefix=True),
+        button(admin.toggle_available, admin_keyboards.TOGGLE_PREFIX, prefix=True),
+        button(admin.ask_price, admin_keyboards.PRICE_PREFIX, prefix=True),
+        button(admin.ask_delete, admin_keyboards.DELETE_PREFIX, prefix=True),
+        button(
+            admin.delete_product, admin_keyboards.DELETE_CONFIRM_PREFIX, prefix=True
+        ),
+        button(admin.new_product, admin_keyboards.NEW),
+    ]
+    return ConversationHandler(
+        entry_points=navigation,
+        states={
+            admin.IDLE: [],  # only the navigation entry points apply here
+            admin.EDIT_PRICE: [text(admin.receive_price)],
+            admin.NEW_NAME: [text(admin.receive_new_name)],
+            admin.NEW_FARSI_NAME: [text(admin.receive_new_farsi_name)],
+            admin.NEW_PRICE: [text(admin.receive_new_price)],
+            admin.NEW_CATEGORY: [
+                button(
+                    admin.receive_new_category,
+                    admin_keyboards.NEW_CATEGORY_PREFIX,
+                    prefix=True,
+                )
+            ],
+            admin.NEW_CONFIRM: [
+                button(admin.save_new_product, admin_keyboards.NEW_SAVE)
+            ],
+        },
+        # Leaving for the customer side (or the order buttons) ends the panel
+        # input; these don't stop the update, so the customer handlers still run.
+        fallbacks=[
+            CommandHandler(["start", "cancel"], admin.leave_panel),
+            CallbackQueryHandler(admin.leave_panel, pattern=r"^(?!adm:)"),
+        ],
+        allow_reentry=True,
     )
+
+
+CUSTOMER_COMMANDS = [
+    BotCommand("start", "شروع سفارش"),
+    BotCommand("cancel", "لغو سفارش"),
+]
+
+
+async def _set_commands(app: Application) -> None:
+    await app.bot.set_my_commands(CUSTOMER_COMMANDS)
+    try:
+        await app.bot.set_my_commands(
+            [*CUSTOMER_COMMANDS, BotCommand("admin", "پنل مدیریت")],
+            scope=BotCommandScopeChat(app.bot_data["admin_id"]),
+        )
+    except TelegramError:
+        log.warning(
+            "Could not set the admin's commands; has the admin started the bot?"
+        )
 
 
 def build_application(
     token: str, admin_id: int | str, proxy: str | None = None
 ) -> Application:
-    """admin_id: chat that approves or rejects every order."""
+    """admin_id: chat that approves or rejects every order and manages products."""
     builder = Application.builder().token(token).post_init(_set_commands)
     if proxy:
         builder = builder.proxy(proxy).get_updates_proxy(proxy)
     app = builder.build()
     app.bot_data["admin_id"] = admin_id
 
+    app.add_handler(build_admin_conversation(int(admin_id)), group=-1)
     app.add_handler(build_conversation())
     app.add_handler(
         _callback(handlers.admin_confirm, keyboards.ADMIN_CONFIRM_PREFIX, prefix=True)

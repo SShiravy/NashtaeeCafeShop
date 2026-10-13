@@ -9,7 +9,6 @@ class Settings(BaseSettings):
 
     # Telegram Bot
     TELEGRAM_CUSTOMER_BOT_TOKEN: str
-    TELEGRAM_ADMIN_BOT_TOKEN: str
     TELEGRAM_ADMIN_ID: int
     TELEGRAM_SUPPORT_ID: str
     TELEGRAM_REPORT_CHANNEL: str

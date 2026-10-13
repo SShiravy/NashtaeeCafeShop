@@ -399,7 +399,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         ),
         reply_markup=keyboards.new_order(),
     )
-    _pending_orders(context)[pending_id] = PendingOrder(
+    pending_orders(context)[pending_id] = PendingOrder(
         items, customer, address, admin_text, message.message_id
     )
     context.user_data.clear()
@@ -449,7 +449,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ---------- admin decisions ----------
 
 
-def _pending_orders(context: ContextTypes.DEFAULT_TYPE) -> dict[str, PendingOrder]:
+def pending_orders(context: ContextTypes.DEFAULT_TYPE) -> dict[str, PendingOrder]:
     # In memory: orders still waiting for the admin are lost if the bot restarts.
     return context.bot_data.setdefault("pending_orders", {})
 
@@ -463,7 +463,7 @@ async def _take_pending(
         await query.answer("⛔ دسترسی ندارید.", show_alert=True)
         return None
     pending_id = query.data.removeprefix(prefix)
-    pending = _pending_orders(context).pop(pending_id, None)
+    pending = pending_orders(context).pop(pending_id, None)
     if pending is None:
         await query.answer(
             "این سفارش قبلاً بررسی شده یا دیگر در دسترس نیست.", show_alert=True
@@ -501,7 +501,7 @@ async def admin_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except Exception:
         log.exception("Could not save the order of chat %s", pending.customer.chat_id)
-        _pending_orders(context)[pending_id] = pending  # let the admin retry
+        pending_orders(context)[pending_id] = pending  # let the admin retry
         await query.answer(
             "ثبت سفارش در دیتابیس انجام نشد. لطفاً دوباره تلاش کنید.", show_alert=True
         )
