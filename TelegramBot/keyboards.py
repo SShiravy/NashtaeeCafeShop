@@ -5,7 +5,7 @@ from telegram import (
     ReplyKeyboardMarkup,
 )
 
-from TelegramBot.menu import CATEGORIES, ITEM_CATEGORY
+from Models.menu import Product, ProductCategory
 from TelegramBot.utils import fa_digits, format_price
 
 # Callback data. Prefixed values carry an id after the prefix.
@@ -17,70 +17,72 @@ CONFIRM = "confirm"
 EDIT = "edit"
 CANCEL = "cancel"
 NEW_ORDER = "new_order"
-CATEGORY_PREFIX = "cat:"  # cat:<category_id>
-ITEM_PREFIX = "item:"  # item:<item_id>
-QTY_PREFIX = "qty:"  # qty:<item_id>:<quantity>
-CUSTOM_QTY_PREFIX = "custom_qty:"  # custom_qty:<item_id>
+CATEGORY_PREFIX = "cat:"  # cat:<ProductCategory.name>
+ITEM_PREFIX = "item:"  # item:<Product.name>
+QTY_PREFIX = "qty:"  # qty:<Product.name>:<quantity>
+CUSTOM_QTY_PREFIX = "custom_qty:"  # custom_qty:<Product.name>
 RECEIVE_PREFIX = "receive:"  # receive:<PICKUP|DELIVERY>
+ADMIN_CONFIRM_PREFIX = "admin_confirm:"  # admin_confirm:<pending order id>
+ADMIN_CANCEL_PREFIX = "admin_cancel:"  # admin_cancel:<pending order id>
 
 PICKUP = "pickup"
 DELIVERY = "delivery"
 
 
-def main_menu() -> InlineKeyboardMarkup:
+def main_menu(categories: list[ProductCategory]) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                category.title, callback_data=CATEGORY_PREFIX + category.id
+                category.value, callback_data=CATEGORY_PREFIX + category.name
             )
         ]
-        for category in CATEGORIES.values()
+        for category in categories
     ]
     rows.append([InlineKeyboardButton("🛒 سبد خرید", callback_data=CART)])
     return InlineKeyboardMarkup(rows)
 
 
-def category_items(category_id: str) -> InlineKeyboardMarkup:
+def category_items(products: list[Product]) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                f"{item.name} — {format_price(item.price)} تومان",
-                callback_data=ITEM_PREFIX + item.id,
+                f"{product.farsi_name} — {format_price(product.price)} تومان",
+                callback_data=ITEM_PREFIX + product.name,
             )
         ]
-        for item in CATEGORIES[category_id].items
+        for product in products
     ]
     rows.append([InlineKeyboardButton("🛒 سبد خرید", callback_data=CART)])
     rows.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data=MAIN)])
     return InlineKeyboardMarkup(rows)
 
 
-def quantity(item_id: str) -> InlineKeyboardMarkup:
+def quantity(product: Product) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    fa_digits(n), callback_data=f"{QTY_PREFIX}{item_id}:{n}"
+                    fa_digits(n), callback_data=f"{QTY_PREFIX}{product.name}:{n}"
                 )
                 for n in range(1, 6)
             ],
             [
                 InlineKeyboardButton(
-                    "🔢 تعداد بیشتر", callback_data=CUSTOM_QTY_PREFIX + item_id
+                    "🔢 تعداد بیشتر", callback_data=CUSTOM_QTY_PREFIX + product.name
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🔙 بازگشت", callback_data=CATEGORY_PREFIX + ITEM_CATEGORY[item_id]
+                    "🔙 بازگشت", callback_data=CATEGORY_PREFIX + product.category.name
                 )
             ],
         ]
     )
 
 
-def custom_quantity(item_id: str) -> InlineKeyboardMarkup:
+def custom_quantity(product: Product) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔙 بازگشت", callback_data=ITEM_PREFIX + item_id)]]
+        [[InlineKeyboardButton("🔙 بازگشت", callback_data=ITEM_PREFIX + product.name)]]
     )
 
 
@@ -150,4 +152,19 @@ def confirm() -> InlineKeyboardMarkup:
 def new_order() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("🍽 سفارش جدید", callback_data=NEW_ORDER)]]
+    )
+
+
+def admin_decision(pending_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ تأیید", callback_data=ADMIN_CONFIRM_PREFIX + pending_id
+                ),
+                InlineKeyboardButton(
+                    "❌ رد", callback_data=ADMIN_CANCEL_PREFIX + pending_id
+                ),
+            ]
+        ]
     )

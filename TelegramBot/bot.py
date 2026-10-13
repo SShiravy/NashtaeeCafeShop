@@ -58,7 +58,6 @@ def build_conversation() -> ConversationHandler:
                 )
             ],
             handlers.NAME: [MessageHandler(TEXT, handlers.get_name)],
-            handlers.COMPANY: [MessageHandler(TEXT, handlers.get_company)],
             handlers.PHONE: [
                 MessageHandler(filters.CONTACT | TEXT, handlers.get_phone)
             ],
@@ -83,7 +82,7 @@ async def _set_commands(app: Application) -> None:
 def build_application(
     token: str, admin_id: int | str, proxy: str | None = None
 ) -> Application:
-    """admin_id: chat that receives every confirmed order."""
+    """admin_id: chat that approves or rejects every order."""
     builder = Application.builder().token(token).post_init(_set_commands)
     if proxy:
         builder = builder.proxy(proxy).get_updates_proxy(proxy)
@@ -91,6 +90,12 @@ def build_application(
     app.bot_data["admin_id"] = admin_id
 
     app.add_handler(build_conversation())
+    app.add_handler(
+        _callback(handlers.admin_confirm, keyboards.ADMIN_CONFIRM_PREFIX, prefix=True)
+    )
+    app.add_handler(
+        _callback(handlers.admin_cancel, keyboards.ADMIN_CANCEL_PREFIX, prefix=True)
+    )
     # Reached only when the conversation didn't handle the update.
     app.add_handler(CallbackQueryHandler(handlers.expired_button))
     app.add_handler(MessageHandler(TEXT, handlers.use_buttons))

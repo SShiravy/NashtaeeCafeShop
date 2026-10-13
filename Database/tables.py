@@ -2,7 +2,7 @@ from typing import Optional
 from Settings import timing
 from datetime import datetime
 from Models.customer import Customer
-from Models.menu import Item, Product
+from Models.menu import Item, Product, ProductCategory
 from Models.order import Order, OrderState
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -40,6 +40,7 @@ class ProductTable(SQLModel, table=True):
     name: str = Field(unique=True, index=True)
     farsi_name: str = Field(unique=True)
     price: int
+    category: ProductCategory = Field(index=True)  # stored by name
     available: bool = Field(default=True)
     prep_count: int = Field(default=3)  # prepration of every 3 food takes prep_minutes
     prep_minutes: int = Field(default=10)
@@ -52,6 +53,7 @@ class ProductTable(SQLModel, table=True):
             name=product.name,
             farsi_name=product.farsi_name,
             price=product.price,
+            category=product.category,
             available=product.available,
             prep_count=product.prep_count,
             prep_minutes=product.prep_minutes,
@@ -62,6 +64,7 @@ class ProductTable(SQLModel, table=True):
             name=self.name,
             farsi_name=self.farsi_name,
             price=self.price,
+            category=self.category,
             available=self.available,
             prep_count=self.prep_count,
             prep_minutes=self.prep_minutes,

@@ -1,4 +1,10 @@
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class ProductCategory(Enum):
+    BREAKFAST = "🍳 صبحانه"
+    LUNCH = "🍝 ناهار"
 
 
 @dataclass(slots=True)
@@ -10,6 +16,7 @@ class Product:
     name: str
     farsi_name: str
     price: int
+    category: ProductCategory
     available: bool = field(default=True)
     prep_count: int = field(default=3)  # prepration of every 3 food takes prep_minutes
     prep_minutes: int = field(default=10)

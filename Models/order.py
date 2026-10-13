@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+
 class OrderState(Enum):
     PENDING = "در حال بررسی"  # waiting for admin to confirm
     CONFIRMED = "تایید شده"  # preparing the order

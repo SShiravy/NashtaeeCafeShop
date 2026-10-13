@@ -1,20 +1,43 @@
 import logging
-import random
-import string
+import secrets
+from dataclasses import dataclass
 from datetime import datetime
 
-from telegram import ReplyKeyboardRemove, Update, User
+from telegram import (
+    InlineKeyboardMarkup,
+    ReplyKeyboardRemove,
+    ReplyParameters,
+    Update,
+    User,
+)
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes, ConversationHandler
 
+from Database import repository
+from Models.customer import Customer
+from Models.menu import Item, Product, ProductCategory
+from Models.order import OrderState
 from TelegramBot import keyboards as keyboards
-from TelegramBot.menu import CATEGORIES, ITEMS, MAX_QTY, MenuItem
 from TelegramBot.utils import en_digits, fa_digits, format_price, normalize_phone
 
 log = logging.getLogger(__name__)
 
 # Conversation states
-MENU, CUSTOM_QTY, RECEIVE, NAME, COMPANY, PHONE, ADDRESS, CONFIRM = range(8)
+MENU, CUSTOM_QTY, RECEIVE, NAME, PHONE, ADDRESS, CONFIRM = range(7)
+
+MAX_QTY = 99
+
+
+@dataclass(slots=True, frozen=True)
+class PendingOrder:
+    """A finished order waiting for the admin; saved to the DB only once confirmed."""
+
+    items: list[Item]
+    customer: Customer
+    address: str | None
+    admin_text: str
+    customer_message_id: int  # the "waiting for confirmation" message
+
 
 CHOOSE_CATEGORY = "لطفاً دسته موردنظر را انتخاب کنید:"
 ASK_NAME = "لطفاً نام و نام خانوادگی خود را وارد کنید:"
@@ -26,70 +49,92 @@ CANCELLED = "❌ سفارش لغو شد."
 # ---------- cart helpers ----------
 
 
-def _cart(context: ContextTypes.DEFAULT_TYPE) -> dict[str, int]:
-    """item id -> quantity"""
+def _cart(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Item]:
+    """Product.name -> Item"""
     return context.user_data.setdefault("cart", {})
 
 
-def _cart_total(cart: dict[str, int]) -> int:
-    return sum(ITEMS[item_id].price * qty for item_id, qty in cart.items())
+def _items_total(items: list[Item]) -> int:
+    return sum(item.product.price * item.count for item in items)
 
 
-def _cart_lines(cart: dict[str, int]) -> list[str]:
+def _item_lines(items: list[Item]) -> list[str]:
     return [
-        f"{fa_digits(n)}. {ITEMS[item_id].name} × {fa_digits(qty)}"
-        f" — {format_price(ITEMS[item_id].price * qty)} تومان"
-        for n, (item_id, qty) in enumerate(cart.items(), 1)
+        f"{fa_digits(n)}. {item.product.farsi_name} × {fa_digits(item.count)}"
+        f" — {format_price(item.product.price * item.count)} تومان"
+        for n, item in enumerate(items, 1)
     ]
 
 
-def _cart_text(cart: dict[str, int]) -> str:
+def _cart_text(cart: dict[str, Item]) -> str:
     if not cart:
         return "🛒 سبد خرید شما خالی است."
+    items = list(cart.values())
     return "\n".join(
         [
             "🛒 سبد خرید شما:",
             "",
-            *_cart_lines(cart),
+            *_item_lines(items),
             "",
             "────────────",
-            f"💰 جمع کل: {format_price(_cart_total(cart))} تومان",
+            f"💰 جمع کل: {format_price(_items_total(items))} تومان",
         ]
     )
 
 
-def _add_to_cart(context: ContextTypes.DEFAULT_TYPE, item: MenuItem, qty: int) -> str:
+def _add_to_cart(context: ContextTypes.DEFAULT_TYPE, product: Product, qty: int) -> str:
     cart = _cart(context)
-    cart[item.id] = min(cart.get(item.id, 0) + qty, MAX_QTY)
+    previous = cart[product.name].count if product.name in cart else 0
+    # A new Item, so its prep time is recalculated for the new count.
+    item = cart[product.name] = Item(product, min(previous + qty, MAX_QTY))
     lines = [
-        f"✅ {item.name} × {fa_digits(qty)} به سبد خرید اضافه شد.",
+        f"✅ {product.farsi_name} × {fa_digits(qty)} به سبد خرید اضافه شد.",
         "",
-        f"🛒 تعداد این مورد در سبد: {fa_digits(cart[item.id])}",
-        f"💰 جمع سبد خرید: {format_price(_cart_total(cart))} تومان",
+        f"🛒 تعداد این مورد در سبد: {fa_digits(item.count)}",
+        f"💰 جمع سبد خرید: {format_price(_items_total(list(cart.values())))} تومان",
     ]
-    if cart[item.id] == MAX_QTY:
+    if item.count == MAX_QTY:
         lines.append(f"(حداکثر تعداد هر مورد {fa_digits(MAX_QTY)} عدد است.)")
     return "\n".join(lines)
 
 
-def _order_summary(data: dict) -> list[str]:
-    is_delivery = data["delivery"] == keyboards.DELIVERY
+def _customer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Customer:
+    return Customer(
+        name=context.user_data["name"],
+        phone=context.user_data["phone"],
+        chat_id=str(update.effective_chat.id),
+    )
+
+
+def _address(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """None means pickup at the cafe."""
+    if context.user_data["delivery"] == keyboards.DELIVERY:
+        return context.user_data["address"]
+    return None
+
+
+def _order_summary(
+    customer: Customer, items: list[Item], address: str | None
+) -> list[str]:
     lines = [
-        f"👤 نام: {data['name']}",
-        f"📞 تماس: {data['phone']}",
-        f"📦 دریافت: {'ارسال' if is_delivery else 'حضوری'}",
+        f"👤 نام: {customer.name}",
+        f"📞 تماس: {customer.phone}",
+        f"📦 دریافت: {'ارسال' if address else 'حضوری'}",
     ]
-    if is_delivery:
-        lines += [f"🏢 شرکت: {data['company']}", f"📍 آدرس: {data['address']}"]
-    cart = data["cart"]
+    if address:
+        lines.append(f"📍 آدرس: {address}")
     lines += [
         "",
         "🍽 اقلام:",
-        *_cart_lines(cart),
+        *_item_lines(items),
         "",
-        f"💰 جمع کل: {format_price(_cart_total(cart))} تومان",
+        f"💰 جمع کل: {format_price(_items_total(items))} تومان",
     ]
     return lines
+
+
+def _main_menu() -> InlineKeyboardMarkup:
+    return keyboards.main_menu(repository.get_categories())
 
 
 # ---------- /start and menu navigation ----------
@@ -102,55 +147,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         f"سلام {name} 🌿\nبه ناشتایی خوش آمدید.", reply_markup=ReplyKeyboardRemove()
     )
-    await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=keyboards.main_menu())
+    await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
     return MENU
 
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(CHOOSE_CATEGORY, reply_markup=keyboards.main_menu())
+    await query.edit_message_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
     return MENU
 
 
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    category = CATEGORIES.get(query.data.removeprefix(keyboards.CATEGORY_PREFIX))
-    if category is None:
+    category = ProductCategory.__members__.get(
+        query.data.removeprefix(keyboards.CATEGORY_PREFIX)
+    )
+    products = [p for p in repository.get_products() if p.category == category]
+    if not products:
         await query.answer("این دسته پیدا نشد.", show_alert=True)
         return MENU
     await query.answer()
     await query.edit_message_text(
-        f"{category.title}\n\nیک مورد را انتخاب کنید:",
-        reply_markup=keyboards.category_items(category.id),
+        f"{category.value}\n\nیک مورد را انتخاب کنید:",
+        reply_markup=keyboards.category_items(products),
     )
     return MENU
 
 
 async def show_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    item = ITEMS.get(query.data.removeprefix(keyboards.ITEM_PREFIX))
-    if item is None:
+    product = repository.get_product(query.data.removeprefix(keyboards.ITEM_PREFIX))
+    if product is None:
         await query.answer("محصول پیدا نشد.", show_alert=True)
         return MENU
     await query.answer()
     await query.edit_message_text(
-        f"🍽 {item.name}\n\nقیمت واحد: {format_price(item.price)} تومان\n\nتعداد را انتخاب کنید:",
-        reply_markup=keyboards.quantity(item.id),
+        f"🍽 {product.farsi_name}\n\nقیمت واحد: {format_price(product.price)} تومان"
+        "\n\nتعداد را انتخاب کنید:",
+        reply_markup=keyboards.quantity(product),
     )
     return MENU
 
 
 async def choose_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    item_id, _, qty = query.data.removeprefix(keyboards.QTY_PREFIX).rpartition(":")
-    item = ITEMS.get(item_id)
-    if item is None or not qty.isdigit():
+    name, _, qty = query.data.removeprefix(keyboards.QTY_PREFIX).rpartition(":")
+    product = repository.get_product(name)
+    if product is None or not qty.isdigit():
         await query.answer("محصول پیدا نشد.", show_alert=True)
         return MENU
     await query.answer()
     await query.edit_message_text(
-        _add_to_cart(context, item, int(qty)), reply_markup=keyboards.after_add()
+        _add_to_cart(context, product, int(qty)), reply_markup=keyboards.after_add()
     )
     return MENU
 
@@ -159,15 +208,17 @@ async def ask_custom_quantity(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     query = update.callback_query
-    item = ITEMS.get(query.data.removeprefix(keyboards.CUSTOM_QTY_PREFIX))
-    if item is None:
+    product = repository.get_product(
+        query.data.removeprefix(keyboards.CUSTOM_QTY_PREFIX)
+    )
+    if product is None:
         await query.answer("محصول پیدا نشد.", show_alert=True)
         return MENU
-    context.user_data["pending_item"] = item.id
+    context.user_data["pending_product"] = product
     await query.answer()
     await query.edit_message_text(
-        f"🍽 {item.name}\n\nتعداد را وارد کنید (۱ تا {fa_digits(MAX_QTY)}):",
-        reply_markup=keyboards.custom_quantity(item.id),
+        f"🍽 {product.farsi_name}\n\nتعداد را وارد کنید (۱ تا {fa_digits(MAX_QTY)}):",
+        reply_markup=keyboards.custom_quantity(product),
     )
     return CUSTOM_QTY
 
@@ -175,11 +226,9 @@ async def ask_custom_quantity(
 async def receive_custom_quantity(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
-    item = ITEMS.get(context.user_data.get("pending_item", ""))
-    if item is None:
-        await update.message.reply_text(
-            CHOOSE_CATEGORY, reply_markup=keyboards.main_menu()
-        )
+    product = context.user_data.get("pending_product")
+    if product is None:
+        await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
         return MENU
     try:
         qty = int(en_digits(update.message.text.strip()))
@@ -191,9 +240,9 @@ async def receive_custom_quantity(
             f"تعداد باید بین ۱ تا {fa_digits(MAX_QTY)} باشد."
         )
         return CUSTOM_QTY
-    del context.user_data["pending_item"]
+    del context.user_data["pending_product"]
     await update.message.reply_text(
-        _add_to_cart(context, item, qty), reply_markup=keyboards.after_add()
+        _add_to_cart(context, product, qty), reply_markup=keyboards.after_add()
     )
     return MENU
 
@@ -216,7 +265,7 @@ async def clear_cart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["cart"] = {}
     await query.answer("سبد خرید خالی شد.")
     await query.edit_message_text(
-        f"🛒 سبد خرید خالی شد.\n\n{CHOOSE_CATEGORY}", reply_markup=keyboards.main_menu()
+        f"🛒 سبد خرید خالی شد.\n\n{CHOOSE_CATEGORY}", reply_markup=_main_menu()
     )
     return MENU
 
@@ -255,19 +304,6 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("لطفاً نام معتبر وارد کنید.")
         return NAME
     context.user_data["name"] = value
-    if context.user_data["delivery"] == keyboards.DELIVERY:
-        await update.message.reply_text("نام شرکت، سازمان یا مجموعه را وارد کنید:")
-        return COMPANY
-    await update.message.reply_text(ASK_PHONE, reply_markup=keyboards.contact_request())
-    return PHONE
-
-
-async def get_company(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    value = update.message.text.strip()
-    if not 2 <= len(value) <= 100:
-        await update.message.reply_text("لطفاً نام شرکت یا مجموعه را وارد کنید.")
-        return COMPANY
-    context.user_data["company"] = value
     await update.message.reply_text(ASK_PHONE, reply_markup=keyboards.contact_request())
     return PHONE
 
@@ -306,7 +342,10 @@ async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = "\n".join(["📋 خلاصه سفارش", "", *_order_summary(context.user_data)])
+    summary = _order_summary(
+        _customer(update, context), list(_cart(context).values()), _address(context)
+    )
+    text = "\n".join(["📋 خلاصه سفارش", "", *summary])
     await update.effective_message.reply_text(text, reply_markup=keyboards.confirm())
     return CONFIRM
 
@@ -315,47 +354,53 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Customer finished the order: send it to the admin for approval."""
     query = update.callback_query
-    order_id = "NAS-" + "".join(
-        random.choices(string.ascii_uppercase + string.digits, k=5)
-    )
-    summary = _order_summary(context.user_data)
+    customer = _customer(update, context)
+    items = list(_cart(context).values())
+    address = _address(context)
+    summary = _order_summary(customer, items, address)
+    pending_id = secrets.token_hex(4)
     admin_text = "\n".join(
         [
-            "🆕 سفارش جدید ناشتایی",
+            "🆕 سفارش جدید ناشتایی (در انتظار تأیید)",
             "",
-            f"🔖 شماره سفارش: {order_id}",
             f"🕐 {datetime.now():%Y/%m/%d %H:%M}",
             f"🆔 تلگرام: {_telegram_user(update.effective_user)}",
             "",
             *summary,
         ]
     )
-    # Without a database the admin's copy is the only record, so the order is
-    # confirmed to the customer only after it reaches the admin.
     try:
-        await context.bot.send_message(context.bot_data["admin_id"], admin_text)
+        await context.bot.send_message(
+            context.bot_data["admin_id"],
+            admin_text,
+            reply_markup=keyboards.admin_decision(pending_id),
+        )
     except TelegramError:
-        log.exception("Could not send order %s to the admin", order_id)
+        log.exception(
+            "Could not send an order of chat %s to the admin", customer.chat_id
+        )
         await query.answer(
-            "ثبت سفارش انجام نشد. لطفاً چند لحظه بعد دوباره تلاش کنید.",
+            "ارسال سفارش انجام نشد. لطفاً چند لحظه بعد دوباره تلاش کنید.",
             show_alert=True,
         )
         return CONFIRM
     await query.answer()
-    log.info("New order %s:\n%s", order_id, admin_text)
-    # Kept as the customer's receipt; "new order" continues in a new message.
-    await query.edit_message_text(
+    # Kept as the customer's copy; "new order" continues in a new message.
+    message = await query.edit_message_text(
         "\n".join(
             [
-                "✅ سفارش شما با موفقیت ثبت شد.",
-                "",
-                f"🔖 شماره سفارش: {order_id}",
+                "⏳ سفارش شما برای ناشتایی ارسال شد و در انتظار تأیید است.",
+                "پس از تأیید، پیام تأیید سفارش برای شما ارسال می‌شود.",
                 "",
                 *summary,
             ]
         ),
         reply_markup=keyboards.new_order(),
+    )
+    _pending_orders(context)[pending_id] = PendingOrder(
+        items, customer, address, admin_text, message.message_id
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -387,7 +432,7 @@ async def start_new_order(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data.clear()
     # Sent as a new message so the confirmed (or cancelled) order stays visible.
     await context.bot.send_message(
-        update.effective_chat.id, CHOOSE_CATEGORY, reply_markup=keyboards.main_menu()
+        update.effective_chat.id, CHOOSE_CATEGORY, reply_markup=_main_menu()
     )
     return MENU
 
@@ -399,6 +444,110 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reply_markup=ReplyKeyboardRemove(),
     )
     return ConversationHandler.END
+
+
+# ---------- admin decisions ----------
+
+
+def _pending_orders(context: ContextTypes.DEFAULT_TYPE) -> dict[str, PendingOrder]:
+    # In memory: orders still waiting for the admin are lost if the bot restarts.
+    return context.bot_data.setdefault("pending_orders", {})
+
+
+async def _take_pending(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, prefix: str
+) -> tuple[str, PendingOrder] | None:
+    """Pop the pending order of an admin button, or answer why it can't be handled."""
+    query = update.callback_query
+    if str(update.effective_chat.id) != str(context.bot_data["admin_id"]):
+        await query.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return None
+    pending_id = query.data.removeprefix(prefix)
+    pending = _pending_orders(context).pop(pending_id, None)
+    if pending is None:
+        await query.answer(
+            "این سفارش قبلاً بررسی شده یا دیگر در دسترس نیست.", show_alert=True
+        )
+        await query.edit_message_reply_markup(None)
+        return None
+    return pending_id, pending
+
+
+async def _notify_customer(
+    context: ContextTypes.DEFAULT_TYPE, pending: PendingOrder, text: str
+) -> None:
+    try:
+        await context.bot.send_message(
+            pending.customer.chat_id,
+            text,
+            reply_parameters=ReplyParameters(
+                pending.customer_message_id, allow_sending_without_reply=True
+            ),
+            reply_markup=keyboards.new_order(),
+        )
+    except TelegramError:
+        log.exception("Could not notify customer %s", pending.customer.chat_id)
+
+
+async def admin_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    taken = await _take_pending(update, context, keyboards.ADMIN_CONFIRM_PREFIX)
+    if taken is None:
+        return
+    pending_id, pending = taken
+    try:
+        order = repository.create_order(
+            pending.items, pending.customer, pending.address, OrderState.CONFIRMED
+        )
+    except Exception:
+        log.exception("Could not save the order of chat %s", pending.customer.chat_id)
+        _pending_orders(context)[pending_id] = pending  # let the admin retry
+        await query.answer(
+            "ثبت سفارش در دیتابیس انجام نشد. لطفاً دوباره تلاش کنید.", show_alert=True
+        )
+        return
+    number = fa_digits(order.order_number)
+    await query.answer(f"سفارش {number} تأیید شد.")
+    log.info("Order %s confirmed:\n%s", order.order_number, pending.admin_text)
+    await query.edit_message_text(
+        f"{pending.admin_text}\n\n✅ تأیید شد — شماره سفارش: {number}"
+    )
+    summary = _order_summary(order.customer, order.items, order.address)
+    await _notify_customer(
+        context,
+        pending,
+        "\n".join(
+            [
+                "✅ سفارش شما توسط ناشتایی تأیید شد.",
+                "",
+                f"🔖 شماره سفارش: {number}",
+                "",
+                *summary,
+            ]
+        ),
+    )
+
+
+async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    taken = await _take_pending(update, context, keyboards.ADMIN_CANCEL_PREFIX)
+    if taken is None:
+        return
+    _, pending = taken
+    await query.answer("سفارش رد شد.")
+    await query.edit_message_text(f"{pending.admin_text}\n\n❌ رد شد")
+    summary = _order_summary(pending.customer, pending.items, pending.address)
+    await _notify_customer(
+        context,
+        pending,
+        "\n".join(
+            [
+                "❌ متأسفانه سفارش زیر توسط ناشتایی تأیید نشد.",
+                "",
+                *summary,
+            ]
+        ),
+    )
 
 
 # ---------- outside the conversation ----------
