@@ -127,7 +127,7 @@ def build_admin_conversation(admin_id: int) -> ConversationHandler:
         button(admin.show_category, admin_keyboards.CATEGORY_PREFIX, prefix=True),
         button(admin.show_product, admin_keyboards.PRODUCT_PREFIX, prefix=True),
         button(admin.toggle_available, admin_keyboards.TOGGLE_PREFIX, prefix=True),
-        button(admin.ask_price, admin_keyboards.PRICE_PREFIX, prefix=True),
+        button(admin.ask_edit, admin_keyboards.EDIT_PREFIX, prefix=True),
         button(admin.ask_delete, admin_keyboards.DELETE_PREFIX, prefix=True),
         button(
             admin.delete_product, admin_keyboards.DELETE_CONFIRM_PREFIX, prefix=True
@@ -150,10 +150,10 @@ def build_admin_conversation(admin_id: int) -> ConversationHandler:
         entry_points=navigation,
         states={
             admin.IDLE: [],  # only the navigation entry points apply here
-            admin.EDIT_PRICE: [text(admin.receive_price)],
+            admin.EDIT_FIELD: [text(admin.receive_edit)],
             admin.NEW_NAME: [text(admin.receive_new_name)],
             admin.NEW_FARSI_NAME: [text(admin.receive_new_farsi_name)],
-            admin.NEW_PRICE: [text(admin.receive_new_price)],
+            admin.NEW_NUMBER: [text(admin.receive_new_number)],
             admin.NEW_CATEGORY: [
                 button(
                     admin.receive_new_category,

@@ -6,6 +6,8 @@ Wired up in TelegramBot.bot.
 import logging
 import re
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from telegram import InlineKeyboardMarkup, Update
@@ -23,17 +25,54 @@ from TelegramBot.utils import en_digits, fa_digits, format_price
 log = logging.getLogger(__name__)
 
 # Conversation states
-IDLE, EDIT_PRICE, NEW_NAME, NEW_FARSI_NAME, NEW_PRICE, NEW_CATEGORY, NEW_CONFIRM = (
+IDLE, EDIT_FIELD, NEW_NAME, NEW_FARSI_NAME, NEW_NUMBER, NEW_CATEGORY, NEW_CONFIRM = (
     range(7)
 )
 
-MAX_PRICE = 1_000_000_000  # Toman
 MAX_LISTED_ORDERS = 20  # one message each; more would hit Telegram's rate limits
 NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{1,31}")
+NEW_STEPS = 6  # name, Farsi name, the three FIELDS, category
 
 # chat_data keys; chat_data, because the customer side clears user_data on /start.
 DRAFT = "admin_new_product"  # dict of Product fields while creating a product
-EDITING = "admin_editing_product"  # Product.name whose price is being edited
+EDITING = "admin_editing"  # (Product.name, field) being edited
+
+
+@dataclass(frozen=True, slots=True)
+class _Field:
+    """A number field of Product that the admin types in."""
+
+    title: str
+    prompt: str  # {name} is the product's Farsi name
+    error: str
+    maximum: int
+    show: Callable[[int], str]
+
+
+# Asked in this order when creating a product; each is editable afterwards.
+FIELDS = {
+    "price": _Field(
+        "قیمت",
+        "💰 قیمت «{name}» را به تومان وارد کنید:",
+        "قیمت معتبر نیست. فقط عدد به تومان وارد کنید (مثلاً ۲۰۰۰۰۰):",
+        1_000_000_000,
+        lambda value: f"{format_price(value)} تومان",
+    ),
+    "prep_count": _Field(
+        "تعداد هر نوبت پخت",
+        "🔢 چند عدد «{name}» با هم در یک نوبت آماده می‌شود؟ (۱ تا ۹۹)",
+        "عدد معتبر نیست. عددی بین ۱ تا ۹۹ وارد کنید:",
+        99,
+        lambda value: f"{fa_digits(value)} عدد",
+    ),
+    "prep_minutes": _Field(
+        "زمان هر نوبت پخت",
+        "⏱ هر نوبت آماده‌سازی «{name}» چند دقیقه طول می‌کشد؟ (۱ تا ۶۰۰)",
+        "عدد معتبر نیست. عددی بین ۱ تا ۶۰۰ دقیقه وارد کنید:",
+        600,
+        lambda value: f"{fa_digits(value)} دقیقه",
+    ),
+}
 
 
 # ---------- views ----------
@@ -71,18 +110,22 @@ def _product_text(product: Product) -> str:
             f"🔤 شناسه: {product.name}",
             f"📂 دسته: {product.category.value}",
             f"💰 قیمت: {format_price(product.price)} تومان",
+            (
+                f"⏱ هر نوبت پخت: تا {fa_digits(product.prep_count)} عدد"
+                f" در {fa_digits(product.prep_minutes)} دقیقه"
+            ),
             f"📌 وضعیت: {'🟢 موجود' if product.available else '🔴 ناموجود'}",
         ]
     )
 
 
-def _parse_price(text: str) -> int | None:
-    """'۲۰۰٬۰۰۰' or '200,000' -> 200000; None if it isn't a sensible price."""
+def _parse_number(text: str, maximum: int) -> int | None:
+    """'۲۰۰٬۰۰۰' or '200,000' -> 200000; None unless it's between 1 and maximum."""
     digits = re.sub(r"[\s,٬،]", "", en_digits(text))
     if not digits.isdigit():
         return None
-    price = int(digits)
-    return price if 0 < price <= MAX_PRICE else None
+    number = int(digits)
+    return number if 1 <= number <= maximum else None
 
 
 async def _product_from_query(update: Update, prefix: str) -> Product | None:
@@ -183,41 +226,43 @@ async def toggle_available(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return IDLE
 
 
-async def ask_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def ask_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    product = await _product_from_query(update, keyboards.PRICE_PREFIX)
-    if product is None:
+    field, _, name = query.data.removeprefix(keyboards.EDIT_PREFIX).partition(":")
+    product = repository.get_product(name, only_available=False)
+    if field not in FIELDS or product is None:
+        await query.answer("محصول پیدا نشد.", show_alert=True)
         return IDLE
-    context.chat_data[EDITING] = product.name
+    spec = FIELDS[field]
+    context.chat_data[EDITING] = (product.name, field)
     await query.answer()
     await query.edit_message_text(
-        f"💰 قیمت جدید «{product.farsi_name}» را به تومان وارد کنید:"
-        f"\n(قیمت فعلی: {format_price(product.price)} تومان)",
+        f"{spec.prompt.format(name=product.farsi_name)}"
+        f"\n(مقدار فعلی: {spec.show(getattr(product, field))})",
         reply_markup=keyboards.cancel(keyboards.PRODUCT_PREFIX + product.name),
     )
-    return EDIT_PRICE
+    return EDIT_FIELD
 
 
-async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    price = _parse_price(update.message.text)
-    if price is None:
-        await update.message.reply_text(
-            "قیمت معتبر نیست. فقط عدد به تومان وارد کنید (مثلاً ۲۰۰۰۰۰):"
-        )
-        return EDIT_PRICE
-    product = repository.get_product(
-        context.chat_data.pop(EDITING, ""), only_available=False
-    )
+async def receive_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name, field = context.chat_data.get(EDITING, ("", "price"))
+    spec = FIELDS[field]
+    value = _parse_number(update.message.text, spec.maximum)
+    if value is None:
+        await update.message.reply_text(spec.error)
+        return EDIT_FIELD
+    context.chat_data.pop(EDITING, None)
+    product = repository.get_product(name, only_available=False)
     if product is None:
         text, markup = _panel_view()
         await update.message.reply_text(
             f"محصول پیدا نشد.\n\n{text}", reply_markup=markup
         )
         return IDLE
-    product.price = price
+    setattr(product, field, value)
     repository.update_product(product)
     await update.message.reply_text(
-        f"✅ قیمت به‌روزرسانی شد.\n\n{_product_text(product)}",
+        f"✅ {spec.title} به‌روزرسانی شد.\n\n{_product_text(product)}",
         reply_markup=keyboards.product(product),
     )
     return IDLE
@@ -269,7 +314,7 @@ async def new_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     _clear_input(context)
     context.chat_data[DRAFT] = {}
     await query.edit_message_text(
-        "➕ محصول جدید (۱ از ۴)\n\n"
+        f"➕ محصول جدید (۱ از {fa_digits(NEW_STEPS)})\n\n"
         "شناسه انگلیسی محصول را وارد کنید.\n"
         "فقط حروف کوچک انگلیسی، عدد و _ ؛ مثلاً pasta_simple",
         reply_markup=keyboards.cancel(keyboards.HOME),
@@ -294,7 +339,7 @@ async def receive_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return NEW_NAME
     context.chat_data.setdefault(DRAFT, {})["name"] = value
     await update.message.reply_text(
-        "➕ محصول جدید (۲ از ۴)\n\nنام فارسی محصول را وارد کنید:",
+        f"➕ محصول جدید (۲ از {fa_digits(NEW_STEPS)})\n\nنام فارسی محصول را وارد کنید:",
         reply_markup=keyboards.cancel(keyboards.HOME),
     )
     return NEW_FARSI_NAME
@@ -318,23 +363,49 @@ async def receive_new_farsi_name(
         return NEW_FARSI_NAME
     context.chat_data.setdefault(DRAFT, {})["farsi_name"] = value
     await update.message.reply_text(
-        "➕ محصول جدید (۳ از ۴)\n\nقیمت را به تومان وارد کنید:",
-        reply_markup=keyboards.cancel(keyboards.HOME),
+        _new_number_prompt(context), reply_markup=keyboards.cancel(keyboards.HOME)
     )
-    return NEW_PRICE
+    return NEW_NUMBER
 
 
-async def receive_new_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    price = _parse_price(update.message.text)
-    if price is None:
+def _next_number_field(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    draft = context.chat_data.setdefault(DRAFT, {})
+    return next((field for field in FIELDS if field not in draft), None)
+
+
+def _new_number_prompt(context: ContextTypes.DEFAULT_TYPE) -> str:
+    field = _next_number_field(context)
+    step = 3 + list(FIELDS).index(field)
+    name = context.chat_data[DRAFT].get("farsi_name", "")
+    return (
+        f"➕ محصول جدید ({fa_digits(step)} از {fa_digits(NEW_STEPS)})\n\n"
+        f"{FIELDS[field].prompt.format(name=name)}"
+    )
+
+
+async def receive_new_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Price, then batch size, then batch time (the FIELDS, in order)."""
+    field = _next_number_field(context)
+    if field is None:  # all typed already; only the category is left
         await update.message.reply_text(
-            "قیمت معتبر نیست. فقط عدد به تومان وارد کنید (مثلاً ۲۰۰۰۰۰):",
-            reply_markup=keyboards.cancel(keyboards.HOME),
+            "دسته محصول را انتخاب کنید:", reply_markup=keyboards.new_category()
         )
-        return NEW_PRICE
-    context.chat_data.setdefault(DRAFT, {})["price"] = price
+        return NEW_CATEGORY
+    value = _parse_number(update.message.text, FIELDS[field].maximum)
+    if value is None:
+        await update.message.reply_text(
+            FIELDS[field].error, reply_markup=keyboards.cancel(keyboards.HOME)
+        )
+        return NEW_NUMBER
+    context.chat_data[DRAFT][field] = value
+    if _next_number_field(context) is not None:
+        await update.message.reply_text(
+            _new_number_prompt(context), reply_markup=keyboards.cancel(keyboards.HOME)
+        )
+        return NEW_NUMBER
     await update.message.reply_text(
-        "➕ محصول جدید (۴ از ۴)\n\nدسته محصول را انتخاب کنید:",
+        f"➕ محصول جدید ({fa_digits(NEW_STEPS)} از {fa_digits(NEW_STEPS)})"
+        "\n\nدسته محصول را انتخاب کنید:",
         reply_markup=keyboards.new_category(),
     )
     return NEW_CATEGORY
@@ -342,7 +413,7 @@ async def receive_new_price(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 def _draft_product(context: ContextTypes.DEFAULT_TYPE) -> Product | None:
     draft = context.chat_data.get(DRAFT) or {}
-    if not {"name", "farsi_name", "price", "category"} <= draft.keys():
+    if not {"name", "farsi_name", "category", *FIELDS} <= draft.keys():
         return None
     return Product(**draft)
 

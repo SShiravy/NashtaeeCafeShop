@@ -10,7 +10,9 @@ NEW_SAVE = "adm:new_save"
 CATEGORY_PREFIX = "adm:cat:"  # adm:cat:<ProductCategory.name>
 PRODUCT_PREFIX = "adm:prod:"  # adm:prod:<Product.name>
 TOGGLE_PREFIX = "adm:toggle:"  # adm:toggle:<Product.name>
-PRICE_PREFIX = "adm:price:"  # adm:price:<Product.name>
+EDIT_PREFIX = (
+    "adm:edit:"  # adm:edit:<field>:<Product.name>, field of PanelAdmin.handlers.FIELDS
+)
 DELETE_PREFIX = "adm:del:"  # adm:del:<Product.name>, asks for confirmation
 DELETE_CONFIRM_PREFIX = "adm:del_yes:"  # adm:del_yes:<Product.name>
 NEW_CATEGORY_PREFIX = "adm:new_cat:"  # adm:new_cat:<ProductCategory.name>
@@ -61,8 +63,12 @@ def product(product: Product) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                _button("✏️ ویرایش قیمت", PRICE_PREFIX + product.name),
+                _button("💰 ویرایش قیمت", f"{EDIT_PREFIX}price:{product.name}"),
                 _button(toggle, TOGGLE_PREFIX + product.name),
+            ],
+            [
+                _button("🔢 تعداد هر نوبت", f"{EDIT_PREFIX}prep_count:{product.name}"),
+                _button("⏱ زمان هر نوبت", f"{EDIT_PREFIX}prep_minutes:{product.name}"),
             ],
             [_button("🗑 حذف", DELETE_PREFIX + product.name)],
             [_button("🔙 بازگشت", CATEGORY_PREFIX + product.category.name)],

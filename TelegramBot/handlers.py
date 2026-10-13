@@ -19,7 +19,13 @@ from Models.menu import Item, Product, ProductCategory
 from Models.order import OrderState
 from TelegramBot import keyboards as keyboards
 from TelegramBot.PanelAdmin import keyboards as admin_keyboards
-from TelegramBot.utils import en_digits, fa_digits, format_price, normalize_phone
+from TelegramBot.utils import (
+    en_digits,
+    fa_digits,
+    format_minutes,
+    format_price,
+    normalize_phone,
+)
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +138,23 @@ def order_summary(
         f"💰 جمع کل: {format_price(_items_total(items))} تومان",
     ]
     return lines
+
+
+def _open_orders_minutes() -> int:
+    """Prep time of every open (confirmed) order; the kitchen works through them all."""
+    return sum(
+        item.total_minutes
+        for order in repository.get_orders(OrderState.CONFIRMED)
+        for item in order.items
+    )
+
+
+def _estimate_lines(minutes: int, address: str | None) -> list[str]:
+    note = "زمان ارسال را شامل نمی‌شود." if address else "تخمینی است."
+    return [
+        f"⏱ زمان تقریبی آماده شدن سفارش: حدود {format_minutes(minutes)}",
+        f"(با احتساب سفارش‌های در صف؛ {note})",
+    ]
 
 
 def _main_menu() -> InlineKeyboardMarkup:
@@ -343,10 +366,14 @@ async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    summary = order_summary(
-        _customer(update, context), list(_cart(context).values()), _address(context)
+    items = list(_cart(context).values())
+    address = _address(context)
+    # Not confirmed yet, so it's added on top of the open orders.
+    minutes = _open_orders_minutes() + sum(item.total_minutes for item in items)
+    summary = order_summary(_customer(update, context), items, address)
+    text = "\n".join(
+        ["📋 خلاصه سفارش", "", *summary, "", *_estimate_lines(minutes, address)]
     )
-    text = "\n".join(["📋 خلاصه سفارش", "", *summary])
     await update.effective_message.reply_text(text, reply_markup=keyboards.confirm())
     return CONFIRM
 
@@ -524,6 +551,8 @@ async def admin_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "✅ سفارش شما توسط ناشتایی تأیید شد.",
                 "",
                 f"🔖 شماره سفارش: {number}",
+                # Now confirmed, so the open orders already include this one.
+                *_estimate_lines(_open_orders_minutes(), order.address),
                 "",
                 *summary,
             ]

@@ -18,6 +18,16 @@ def format_price(amount: int) -> str:
     return fa_digits(f"{amount:,}".replace(",", "٬"))
 
 
+def format_minutes(minutes: int) -> str:
+    """75 -> ۱ ساعت و ۱۵ دقیقه"""
+    hours, minutes = divmod(minutes, 60)
+    if not hours:
+        return f"{fa_digits(minutes)} دقیقه"
+    if not minutes:
+        return f"{fa_digits(hours)} ساعت"
+    return f"{fa_digits(hours)} ساعت و {fa_digits(minutes)} دقیقه"
+
+
 def normalize_phone(raw: str) -> str | None:
     """Return an Iranian mobile number as 09xxxxxxxxx, or None if it is invalid."""
     phone = re.sub(r"[\s\-()]", "", en_digits(raw))
