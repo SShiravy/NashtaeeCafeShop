@@ -6,4 +6,3 @@ class Customer:
     name: str
     phone: str
     chat_id: str
-    address: str
