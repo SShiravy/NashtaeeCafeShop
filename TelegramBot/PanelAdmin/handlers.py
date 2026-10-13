@@ -1,16 +1,26 @@
-"""Admin panel: product CRUD for the TELEGRAM_ADMIN_ID chat (wired up in TelegramBot.bot)."""
+"""Admin panel for the TELEGRAM_ADMIN_ID chat: product CRUD and open orders.
 
+Wired up in TelegramBot.bot.
+"""
+
+import logging
 import re
 from collections import Counter
+from datetime import UTC, datetime
 
 from telegram import InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes, ConversationHandler
 
 from Database import repository
 from Models.menu import Product, ProductCategory
-from TelegramBot.handlers import pending_orders
+from Models.order import Order, OrderState
+from TelegramBot import keyboards as customer_keyboards
+from TelegramBot.handlers import order_summary, pending_orders
 from TelegramBot.PanelAdmin import keyboards
-from TelegramBot.utils import en_digits, format_price
+from TelegramBot.utils import en_digits, fa_digits, format_price
+
+log = logging.getLogger(__name__)
 
 # Conversation states
 IDLE, EDIT_PRICE, NEW_NAME, NEW_FARSI_NAME, NEW_PRICE, NEW_CATEGORY, NEW_CONFIRM = (
@@ -18,6 +28,7 @@ IDLE, EDIT_PRICE, NEW_NAME, NEW_FARSI_NAME, NEW_PRICE, NEW_CATEGORY, NEW_CONFIRM
 )
 
 MAX_PRICE = 1_000_000_000  # Toman
+MAX_LISTED_ORDERS = 20  # one message each; more would hit Telegram's rate limits
 NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{1,31}")
 
 # chat_data keys; chat_data, because the customer side clears user_data on /start.
@@ -30,9 +41,10 @@ EDITING = "admin_editing_product"  # Product.name whose price is being edited
 
 def _panel_view() -> tuple[str, InlineKeyboardMarkup]:
     counts = Counter(p.category for p in repository.get_products(only_available=False))
+    open_orders = len(repository.get_orders(OrderState.CONFIRMED))
     return (
-        "🛠 پنل مدیریت ناشتایی — محصولات\n\nیک دسته را انتخاب کنید:",
-        keyboards.panel(counts),
+        "🛠 پنل مدیریت ناشتایی\n\nسفارش‌های باز یا یک دسته محصولات را انتخاب کنید:",
+        keyboards.panel(counts, open_orders),
     )
 
 
@@ -373,3 +385,143 @@ async def save_new_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         reply_markup=keyboards.product(product),
     )
     return IDLE
+
+
+# ---------- open orders ----------
+
+
+def _local_time(moment: datetime) -> datetime:
+    # created_at is saved in UTC; SQLite gives it back without a timezone.
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone()
+
+
+def order_text(order: Order) -> str:
+    return "\n".join(
+        [
+            f"🧾 سفارش {fa_digits(order.order_number)} ({order.state.value})",
+            f"🕐 {_local_time(order.created_at):%Y/%m/%d %H:%M}",
+            "",
+            *order_summary(order.customer, order.items, order.address),
+        ]
+    )
+
+
+async def show_open_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Each confirmed order as its own message with finish/cancel buttons."""
+    query = update.callback_query
+    await query.answer()
+    _clear_input(context)
+    orders = repository.get_orders(OrderState.CONFIRMED)
+    lines = [f"📋 سفارش‌های باز: {fa_digits(len(orders))}"]
+    if not orders:
+        lines.append("\nسفارش بازی وجود ندارد.")
+    elif len(orders) > MAX_LISTED_ORDERS:
+        lines.append(
+            f"\n{fa_digits(MAX_LISTED_ORDERS)} سفارش قدیمی‌تر در پیام‌های زیر آمده است."
+        )
+    if waiting := len(pending_orders(context)):
+        lines.append(f"\n⏳ {fa_digits(waiting)} سفارش هنوز در انتظار تأیید شماست.")
+    await query.edit_message_text("\n".join(lines), reply_markup=keyboards.back_home())
+    for order in orders[:MAX_LISTED_ORDERS]:
+        await context.bot.send_message(
+            update.effective_chat.id,
+            order_text(order),
+            reply_markup=keyboards.order_actions(order.order_number),
+        )
+    return IDLE
+
+
+async def _open_order(update: Update, prefix: str) -> Order | None:
+    """The confirmed order named in the callback data, or None after telling the admin.
+
+    Answers the query only when returning None.
+    """
+    query = update.callback_query
+    number = query.data.removeprefix(prefix)
+    order = repository.get_order(int(number)) if number.isdigit() else None
+    if order is None:
+        await query.answer("سفارش پیدا نشد.", show_alert=True)
+        await query.edit_message_reply_markup(None)
+        return None
+    if order.state != OrderState.CONFIRMED:
+        await query.answer(
+            f"این سفارش قبلاً «{order.state.value}» شده است.", show_alert=True
+        )
+        await query.edit_message_reply_markup(None)
+        return None
+    return order
+
+
+async def _close_order(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, order: Order, state: OrderState
+) -> None:
+    """Save the new state, tell the customer, and mark the admin's message."""
+    query = update.callback_query
+    order = repository.update_order_state(order.order_number, state)
+    number = fa_digits(order.order_number)
+    if state == OrderState.FINISHED:
+        await query.answer(f"🏁 سفارش {number} تمام شد.")
+        status = "🏁 اتمام پخت"
+        headline = (
+            "🏁 سفارش شما آماده شد و به‌زودی ارسال می‌شود."
+            if order.address
+            else "🏁 سفارش شما آماده است؛ می‌توانید آن را تحویل بگیرید."
+        )
+    else:
+        await query.answer(f"❌ سفارش {number} لغو شد.")
+        status = "❌ لغو شد"
+        headline = "❌ متأسفانه سفارش شما توسط ناشتایی لغو شد."
+    try:
+        await context.bot.send_message(
+            order.customer.chat_id,
+            "\n".join(
+                [
+                    headline,
+                    "",
+                    f"🔖 شماره سفارش: {number}",
+                    "",
+                    *order_summary(order.customer, order.items, order.address),
+                ]
+            ),
+            reply_markup=customer_keyboards.new_order(),
+        )
+        notified = "مشتری مطلع شد."
+    except TelegramError:
+        log.exception("Could not notify customer %s", order.customer.chat_id)
+        notified = "⚠️ ارسال پیام به مشتری ناموفق بود."
+    # Keep what the message said (e.g. who ordered) and add the outcome below it.
+    text = getattr(query.message, "text", None) or order_text(order)
+    await query.edit_message_text(f"{text}\n\n{status} — {notified}")
+
+
+async def finish_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if order := await _open_order(update, keyboards.ORDER_FINISH_PREFIX):
+        await _close_order(update, context, order, OrderState.FINISHED)
+
+
+async def ask_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if order := await _open_order(update, keyboards.ORDER_CANCEL_PREFIX):
+        await update.callback_query.answer(
+            f"برای لغو سفارش {fa_digits(order.order_number)} دوباره تأیید کنید."
+        )
+        await update.callback_query.edit_message_reply_markup(
+            keyboards.confirm_cancel_order(order.order_number)
+        )
+
+
+async def show_order_actions(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Back from the cancel confirmation."""
+    if order := await _open_order(update, keyboards.ORDER_ACTIONS_PREFIX):
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_reply_markup(
+            keyboards.order_actions(order.order_number)
+        )
+
+
+async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if order := await _open_order(update, keyboards.ORDER_CANCEL_CONFIRM_PREFIX):
+        await _close_order(update, context, order, OrderState.CANCELED)

@@ -14,14 +14,20 @@ PRICE_PREFIX = "adm:price:"  # adm:price:<Product.name>
 DELETE_PREFIX = "adm:del:"  # adm:del:<Product.name>, asks for confirmation
 DELETE_CONFIRM_PREFIX = "adm:del_yes:"  # adm:del_yes:<Product.name>
 NEW_CATEGORY_PREFIX = "adm:new_cat:"  # adm:new_cat:<ProductCategory.name>
+ORDERS = "adm:orders"
+ORDER_ACTIONS_PREFIX = "adm:ord:"  # adm:ord:<order_number>, shows finish/cancel
+ORDER_FINISH_PREFIX = "adm:ord_done:"  # adm:ord_done:<order_number>
+ORDER_CANCEL_PREFIX = "adm:ord_cancel:"  # adm:ord_cancel:<order_number>, asks first
+ORDER_CANCEL_CONFIRM_PREFIX = "adm:ord_cancel_yes:"  # adm:ord_cancel_yes:<number>
 
 
 def _button(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text, callback_data=data)
 
 
-def panel(counts: dict[ProductCategory, int]) -> InlineKeyboardMarkup:
-    rows = [
+def panel(counts: dict[ProductCategory, int], open_orders: int) -> InlineKeyboardMarkup:
+    rows = [[_button(f"📋 سفارش‌های باز ({fa_digits(open_orders)})", ORDERS)]]
+    rows += [
         [
             _button(
                 f"{category.value} ({fa_digits(counts.get(category, 0))})",
@@ -92,4 +98,34 @@ def new_category() -> InlineKeyboardMarkup:
 def confirm_new() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[_button("✅ ثبت محصول", NEW_SAVE), _button("❌ انصراف", HOME)]]
+    )
+
+
+def back_home() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[_button("🔙 پنل مدیریت", HOME)]])
+
+
+def order_actions(order_number: int) -> InlineKeyboardMarkup:
+    """Buttons of a confirmed order: finish it, or cancel it (asks first)."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                _button("🏁 اتمام پخت", f"{ORDER_FINISH_PREFIX}{order_number}"),
+                _button("❌ لغو سفارش", f"{ORDER_CANCEL_PREFIX}{order_number}"),
+            ]
+        ]
+    )
+
+
+def confirm_cancel_order(order_number: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                _button(
+                    "⚠️ بله، سفارش لغو شود",
+                    f"{ORDER_CANCEL_CONFIRM_PREFIX}{order_number}",
+                ),
+                _button("🔙 بازگشت", f"{ORDER_ACTIONS_PREFIX}{order_number}"),
+            ]
+        ]
     )

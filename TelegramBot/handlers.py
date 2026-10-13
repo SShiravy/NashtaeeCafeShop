@@ -18,6 +18,7 @@ from Models.customer import Customer
 from Models.menu import Item, Product, ProductCategory
 from Models.order import OrderState
 from TelegramBot import keyboards as keyboards
+from TelegramBot.PanelAdmin import keyboards as admin_keyboards
 from TelegramBot.utils import en_digits, fa_digits, format_price, normalize_phone
 
 log = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def _address(context: ContextTypes.DEFAULT_TYPE) -> str | None:
     return None
 
 
-def _order_summary(
+def order_summary(
     customer: Customer, items: list[Item], address: str | None
 ) -> list[str]:
     lines = [
@@ -342,7 +343,7 @@ async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    summary = _order_summary(
+    summary = order_summary(
         _customer(update, context), list(_cart(context).values()), _address(context)
     )
     text = "\n".join(["📋 خلاصه سفارش", "", *summary])
@@ -359,7 +360,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     customer = _customer(update, context)
     items = list(_cart(context).values())
     address = _address(context)
-    summary = _order_summary(customer, items, address)
+    summary = order_summary(customer, items, address)
     pending_id = secrets.token_hex(4)
     admin_text = "\n".join(
         [
@@ -509,10 +510,12 @@ async def admin_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     number = fa_digits(order.order_number)
     await query.answer(f"سفارش {number} تأیید شد.")
     log.info("Order %s confirmed:\n%s", order.order_number, pending.admin_text)
+    # From here on the order is open: the admin finishes or cancels it.
     await query.edit_message_text(
-        f"{pending.admin_text}\n\n✅ تأیید شد — شماره سفارش: {number}"
+        f"{pending.admin_text}\n\n✅ تأیید شد — شماره سفارش: {number}",
+        reply_markup=admin_keyboards.order_actions(order.order_number),
     )
-    summary = _order_summary(order.customer, order.items, order.address)
+    summary = order_summary(order.customer, order.items, order.address)
     await _notify_customer(
         context,
         pending,
@@ -536,7 +539,7 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _, pending = taken
     await query.answer("سفارش رد شد.")
     await query.edit_message_text(f"{pending.admin_text}\n\n❌ رد شد")
-    summary = _order_summary(pending.customer, pending.items, pending.address)
+    summary = order_summary(pending.customer, pending.items, pending.address)
     await _notify_customer(
         context,
         pending,

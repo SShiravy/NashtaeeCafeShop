@@ -91,6 +91,40 @@ def delete_product(name: str) -> bool:
         return True
 
 
+def get_order(order_number: int) -> Order | None:
+    with get_session() as session:
+        row = session.exec(
+            select(OrderTable).where(OrderTable.order_number == order_number)
+        ).first()
+        return row.to_model() if row else None
+
+
+def get_orders(state: OrderState) -> list[Order]:
+    """Orders in this state, oldest first."""
+    with get_session() as session:
+        rows = session.exec(
+            select(OrderTable)
+            .where(OrderTable.state == state)
+            .order_by(OrderTable.order_number)
+        ).all()
+        return [row.to_model() for row in rows]
+
+
+def update_order_state(order_number: int, state: OrderState) -> Order | None:
+    """Set the order's state and return it; None if there is no such order."""
+    with get_session() as session:
+        row = session.exec(
+            select(OrderTable).where(OrderTable.order_number == order_number)
+        ).first()
+        if row is None:
+            return None
+        row.state = state
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row.to_model()
+
+
 def create_order(
     items: list[Item],
     customer: Customer,

@@ -107,7 +107,7 @@ def _stop_after(callback):
 
 
 def build_admin_conversation(admin_id: int) -> ConversationHandler:
-    """Product CRUD panel, opened with /admin; meant for handler group -1."""
+    """Products and open orders panel, opened with /admin; for handler group -1."""
 
     def button(callback, data: str, prefix: bool = False) -> CallbackQueryHandler:
         return _AdminCallbackHandler(
@@ -133,6 +133,18 @@ def build_admin_conversation(admin_id: int) -> ConversationHandler:
             admin.delete_product, admin_keyboards.DELETE_CONFIRM_PREFIX, prefix=True
         ),
         button(admin.new_product, admin_keyboards.NEW),
+        button(admin.show_open_orders, admin_keyboards.ORDERS),
+        # Order buttons return None, so they leave any panel input as it was.
+        button(admin.finish_order, admin_keyboards.ORDER_FINISH_PREFIX, prefix=True),
+        button(
+            admin.ask_cancel_order, admin_keyboards.ORDER_CANCEL_PREFIX, prefix=True
+        ),
+        button(
+            admin.cancel_order, admin_keyboards.ORDER_CANCEL_CONFIRM_PREFIX, prefix=True
+        ),
+        button(
+            admin.show_order_actions, admin_keyboards.ORDER_ACTIONS_PREFIX, prefix=True
+        ),
     ]
     return ConversationHandler(
         entry_points=navigation,
