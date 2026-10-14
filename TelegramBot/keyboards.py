@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -40,6 +42,8 @@ POLL = "poll"  # /start parameter: t.me/<bot>?start=poll
 POLL_ANSWER_PREFIX = "poll_ans:"  # poll_ans:<question index>:<option index>
 POLL_QUESTION_PREFIX = "poll_q:"  # poll_q:<question index>, shows that question
 POLL_SKIP_PREFIX = "poll_skip:"  # poll_skip:<question index> of an optional question
+REFERRAL = "referral"
+REFERRAL_START_PREFIX = "ref_"  # /start parameter: t.me/<bot>?start=ref_<invite code>
 
 PICKUP = "pickup"
 DELIVERY = "delivery"
@@ -58,6 +62,7 @@ def main_menu(categories: list[ProductCategory]) -> InlineKeyboardMarkup:
         for category in categories
     ]
     rows.append([InlineKeyboardButton("🛒 سبد خرید", callback_data=CART)])
+    rows.append([InlineKeyboardButton("🎁 دعوت از دوستان", callback_data=REFERRAL)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -241,6 +246,16 @@ def profile(known: bool) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton("📞 تغییر شماره", callback_data=PROFILE_PHONE)]
         )
+    rows.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data=MAIN)])
+    return InlineKeyboardMarkup(rows)
+
+
+def referral(link: str | None, share_text: str = "") -> InlineKeyboardMarkup:
+    """link: the user's invite link, shared with Telegram's share dialog."""
+    rows = []
+    if link:
+        share_url = f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}"
+        rows.append([InlineKeyboardButton("📤 ارسال لینک دعوت", url=share_url)])
     rows.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data=MAIN)])
     return InlineKeyboardMarkup(rows)
 

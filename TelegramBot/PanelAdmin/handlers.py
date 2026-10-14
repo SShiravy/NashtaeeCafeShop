@@ -477,7 +477,7 @@ def order_text(order: Order) -> str:
             f"🧾 سفارش {fa_digits(order.order_number)} ({order.state.value})",
             f"🕐 {_local_time(order.created_at):%Y/%m/%d %H:%M}",
             "",
-            *order_summary(order.customer, order.items, order.address),
+            *order_summary(order.customer, order.items, order.address, order.discount),
         ]
     )
 
@@ -556,7 +556,9 @@ async def _close_order(
                     "",
                     f"🔖 شماره سفارش: {number}",
                     "",
-                    *order_summary(order.customer, order.items, order.address),
+                    *order_summary(
+                        order.customer, order.items, order.address, order.discount
+                    ),
                 ]
             ),
             reply_markup=customer_keyboards.new_order(),

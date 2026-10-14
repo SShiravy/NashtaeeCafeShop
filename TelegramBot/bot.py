@@ -16,6 +16,7 @@ from telegram.ext import (
 )
 from telegram.warnings import PTBUserWarning
 
+from Models.referral import ReferralPlan
 from TelegramBot import handlers
 from TelegramBot import keyboards
 from TelegramBot.PanelAdmin import handlers as admin
@@ -62,12 +63,14 @@ def build_conversation() -> ConversationHandler:
             handlers.show_poll_question, keyboards.POLL_QUESTION_PREFIX, prefix=True
         ),
         _callback(handlers.skip_poll_question, keyboards.POLL_SKIP_PREFIX, prefix=True),
+        _callback(handlers.show_referral, keyboards.REFERRAL),
     ]
     return ConversationHandler(
         entry_points=[
             CommandHandler("start", handlers.start),
             CommandHandler("profile", handlers.show_profile),
             CommandHandler("poll", handlers.open_poll),
+            CommandHandler("referral", handlers.show_referral),
             *navigation,
         ],
         states={
@@ -204,7 +207,9 @@ def build_admin_conversation(admin_id: int) -> ConversationHandler:
         # Leaving for the customer side (or the order buttons) ends the panel
         # input; these don't stop the update, so the customer handlers still run.
         fallbacks=[
-            CommandHandler(["start", "cancel", "profile", "poll"], admin.leave_panel),
+            CommandHandler(
+                ["start", "cancel", "profile", "poll", "referral"], admin.leave_panel
+            ),
             CallbackQueryHandler(admin.leave_panel, pattern=r"^(?!adm:)"),
         ],
         allow_reentry=True,
@@ -219,6 +224,7 @@ CUSTOMER_COMMANDS = [
     BotCommand("support", "پشتیبانی"),
     BotCommand("profile", "اطلاعات من"),
     BotCommand("poll", "شرکت در نظرسنجی"),
+    BotCommand("referral", "دعوت از دوستان"),
 ]
 
 # Shown in an empty chat with the bot, before the user presses Start.
@@ -245,10 +251,16 @@ async def _set_bot_info(app: Application) -> None:
 
 
 def build_application(
-    token: str, admin_id: int | str, proxy: str | None = None, support_id: str = ""
+    token: str,
+    admin_id: int | str,
+    proxy: str | None = None,
+    support_id: str = "",
+    *,
+    referral_plan: ReferralPlan,
 ) -> Application:
     """admin_id: chat that approves or rejects every order and manages products.
     support_id: what /support sends customers, e.g. an @username.
+    referral_plan: the discounts of invite links (/referral).
     """
     builder = Application.builder().token(token).post_init(_set_bot_info)
     if proxy:
@@ -256,6 +268,7 @@ def build_application(
     app = builder.build()
     app.bot_data["admin_id"] = admin_id
     app.bot_data["support_id"] = support_id
+    app.bot_data["referral_plan"] = referral_plan
 
     app.add_handler(build_admin_conversation(int(admin_id)), group=-1)
     app.add_handler(

@@ -16,8 +16,9 @@ from telegram.ext import ContextTypes, ConversationHandler
 from Database import repository
 from Models.customer import Customer
 from Models.menu import Item, Product, ProductCategory
-from Models.order import OrderState
+from Models.order import NO_DISCOUNT, Discount, OrderState
 from Models.poll import POLL, PollAnswer, PollQuestion, PollResponse
+from Models.referral import JoinResult, ReferralPlan
 from TelegramBot import keyboards as keyboards
 from TelegramBot.PanelAdmin import keyboards as admin_keyboards
 from TelegramBot.utils import (
@@ -51,6 +52,7 @@ class PendingOrder:
     address: str | None
     admin_text: str
     customer_message_id: int  # the "waiting for confirmation" message
+    discount: Discount
 
 
 CHOOSE_CATEGORY = "لطفاً دسته موردنظر را انتخاب کنید:"
@@ -145,7 +147,10 @@ def _address(context: ContextTypes.DEFAULT_TYPE) -> str | None:
 
 
 def order_summary(
-    customer: Customer, items: list[Item], address: str | None
+    customer: Customer,
+    items: list[Item],
+    address: str | None,
+    discount: Discount = NO_DISCOUNT,
 ) -> list[str]:
     lines = [f"👤 نام: {customer.name}"]
     if customer.company:
@@ -156,13 +161,24 @@ def order_summary(
     ]
     if address:
         lines.append(f"📍 آدرس: {address}")
+    total = _items_total(items)
     lines += [
         "",
         "🍽 اقلام:",
         *_item_lines(items),
         "",
-        f"💰 جمع کل: {format_price(_items_total(items))} تومان",
+        f"💰 جمع کل: {format_price(total)} تومان",
     ]
+    if discount.first_buy:
+        lines.append(
+            f"🎁 تخفیف اولین خرید (لینک دعوت): {format_price(discount.first_buy)} تومان"
+        )
+    if discount.reward:
+        lines.append(f"🎁 تخفیف دعوت از دوستان: {format_price(discount.reward)} تومان")
+    if discount.total:
+        lines.append(
+            f"💳 مبلغ قابل پرداخت: {format_price(total - discount.total)} تومان"
+        )
     return lines
 
 
@@ -187,18 +203,47 @@ def _main_menu() -> InlineKeyboardMarkup:
     return keyboards.main_menu(repository.get_categories())
 
 
+def _plan(context: ContextTypes.DEFAULT_TYPE) -> ReferralPlan:
+    return context.bot_data["referral_plan"]
+
+
+def _order_discount(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: str, items: list[Item]
+) -> Discount:
+    """Referral discounts of a new order, leaving out the ones already used by the
+    chat's orders still waiting for the admin (they aren't in the database yet)."""
+    plan = _plan(context)
+    waiting = [
+        pending.discount
+        for pending in pending_orders(context).values()
+        if pending.customer.chat_id == chat_id
+    ]
+    first_buy = not any(d.first_buy for d in waiting) and (
+        repository.first_buy_discount_due(chat_id)
+    )
+    reward_left = plan.reward_left(repository.get_referral_stats(chat_id)) - sum(
+        d.reward for d in waiting
+    )
+    return plan.discount(_items_total(items), first_buy, reward_left)
+
+
 # ---------- /start and menu navigation ----------
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    customer = repository.get_customer(_chat_id(update))
+    chat_id = _chat_id(update)
+    customer = repository.get_customer(chat_id)
     name = customer.name if customer else update.effective_user.first_name
+    text = f"سلام {name or 'دوست ناشتایی'} 🌿\nبه ناشتایی خوش آمدید."
+    payload = context.args[0] if context.args else ""
+    # Opened with t.me/<bot>?start=ref_<invite code>
+    if payload.startswith(keyboards.REFERRAL_START_PREFIX):
+        code = payload.removeprefix(keyboards.REFERRAL_START_PREFIX)
+        if note := _join_with_code(context, chat_id, code):
+            text += f"\n\n{note}"
     # Also removes a contact keyboard left over from an unfinished order.
-    await update.message.reply_text(
-        f"سلام {name or 'دوست ناشتایی'} 🌿\nبه ناشتایی خوش آمدید.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
     if context.args == [keyboards.POLL]:  # opened with t.me/<bot>?start=poll
         return await open_poll(update, context)
     await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
@@ -483,9 +528,11 @@ async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     items = list(_cart(context).values())
     address = _address(context)
+    customer = _customer(update, context)
     # Not confirmed yet, so it's added on top of the open orders.
     minutes = _open_orders_minutes() + sum(item.total_minutes for item in items)
-    summary = order_summary(_customer(update, context), items, address)
+    discount = _order_discount(context, customer.chat_id, items)
+    summary = order_summary(customer, items, address, discount)
     text = "\n".join(
         ["📋 خلاصه سفارش", "", *summary, "", *_estimate_lines(minutes, address)]
     )
@@ -629,7 +676,8 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     customer = _customer(update, context)
     items = list(_cart(context).values())
     address = _address(context)
-    summary = order_summary(customer, items, address)
+    discount = _order_discount(context, customer.chat_id, items)
+    summary = order_summary(customer, items, address, discount)
     pending_id = secrets.token_hex(4)
     admin_text = "\n".join(
         [
@@ -670,7 +718,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         reply_markup=keyboards.new_order(),
     )
     pending_orders(context)[pending_id] = PendingOrder(
-        items, customer, address, admin_text, message.message_id
+        items, customer, address, admin_text, message.message_id, discount
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -790,7 +838,11 @@ async def admin_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     pending_id, pending = taken
     try:
         order = repository.create_order(
-            pending.items, pending.customer, pending.address, OrderState.CONFIRMED
+            pending.items,
+            pending.customer,
+            pending.address,
+            OrderState.CONFIRMED,
+            pending.discount,
         )
     except Exception:
         log.exception("Could not save the order of chat %s", pending.customer.chat_id)
@@ -807,7 +859,7 @@ async def admin_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"{pending.admin_text}\n\n✅ تأیید شد — شماره سفارش: {number}",
         reply_markup=admin_keyboards.order_actions(order.order_number),
     )
-    summary = order_summary(order.customer, order.items, order.address)
+    summary = order_summary(order.customer, order.items, order.address, order.discount)
     await _notify_customer(
         context,
         pending,
@@ -833,7 +885,9 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _, pending = taken
     await query.answer("سفارش رد شد.")
     await query.edit_message_text(f"{pending.admin_text}\n\n❌ رد شد")
-    summary = order_summary(pending.customer, pending.items, pending.address)
+    summary = order_summary(
+        pending.customer, pending.items, pending.address, pending.discount
+    )
     await _notify_customer(
         context,
         pending,
@@ -1024,6 +1078,111 @@ async def _finish_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     else:
         note = POLL_DONE
     await _send(update, note)
+    return MENU
+
+
+# ---------- referral plan ----------
+
+
+def _join_with_code(context: ContextTypes.DEFAULT_TYPE, chat_id: str, code: str) -> str:
+    """Record the invite link the user started the bot with; what to tell them."""
+    discount = f"{format_price(_plan(context).first_buy_discount)} تومان"
+    match repository.add_referral(code, chat_id):
+        case JoinResult.JOINED:
+            log.info("Chat %s joined with invite code %s", chat_id, code)
+            return (
+                "🎁 با لینک دعوت دوستتان وارد شدید؛"
+                f" {discount} تخفیف اولین خرید برای شما فعال شد."
+            )
+        case JoinResult.ALREADY_INVITED:
+            if repository.first_buy_discount_due(chat_id):
+                return f"🎁 تخفیف اولین خرید شما ({discount}) فعال است."
+            return ""
+        case JoinResult.OWN_CODE:
+            return "🔗 این لینک دعوت خودتان است؛ آن را برای دوستانتان بفرستید."
+        case JoinResult.ALREADY_BOUGHT:
+            return "لینک دعوت برای کسانی است که هنوز از ناشتایی خرید نکرده‌اند."
+        case JoinResult.UNKNOWN_CODE:
+            return "⚠️ این لینک دعوت معتبر نیست."
+
+
+def _plan_lines(plan: ReferralPlan) -> list[str]:
+    counted = "خرید کنند" if plan.reward_on_purchase else "وارد ناشتایی شوند"
+    return [
+        "🎁 طرح دعوت از دوستان ناشتایی",
+        "",
+        (
+            "بعد از اولین خرید، یک لینک دعوت اختصاصی می‌گیرید؛"
+            " آن را برای دوستان و همکارانتان بفرستید:"
+        ),
+        (
+            "• هر کس با لینک شما وارد ناشتایی شود، در اولین خریدش"
+            f" {format_price(plan.first_buy_discount)} تومان تخفیف می‌گیرد."
+        ),
+        (
+            f"• به ازای هر {fa_digits(plan.reward_every)} نفر از دعوت‌شدگانتان که"
+            f" {counted}، {format_price(plan.reward_discount)} تومان تخفیف"
+            " برای خرید بعدی شما ثبت می‌شود."
+        ),
+        (
+            "• تخفیف شما خودکار روی سفارش بعدی‌تان اعمال می‌شود؛"
+            " اگر از مبلغ سفارش بیشتر باشد، باقی‌مانده برای سفارش‌های بعدی می‌ماند."
+        ),
+        "• لینک دعوت فقط برای کسانی است که هنوز از ناشتایی خرید نکرده‌اند.",
+    ]
+
+
+def _referral_view(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: str
+) -> tuple[str, InlineKeyboardMarkup]:
+    plan = _plan(context)
+    lines = _plan_lines(plan)
+    code = repository.issue_referral_code(chat_id)
+    if code is None:
+        lines += ["", "🔒 لینک دعوت شما بعد از تأیید اولین سفارشتان فعال می‌شود."]
+        if repository.first_buy_discount_due(chat_id):
+            lines.append(
+                "🎁 شما با لینک دعوت وارد شده‌اید و در اولین خرید"
+                f" {format_price(plan.first_buy_discount)} تومان تخفیف دارید."
+            )
+        return "\n".join(lines), keyboards.referral(None)
+    stats = repository.get_referral_stats(chat_id)
+    link = (
+        f"https://t.me/{context.bot.username}"
+        f"?start={keyboards.REFERRAL_START_PREFIX}{code}"
+    )
+    next_reward = fa_digits(plan.until_next_reward(stats))
+    lines += [
+        "",
+        "🔗 لینک دعوت شما:",
+        link,
+        "",
+        "📊 دعوت‌های شما:",
+        f"👥 وارد شده با لینک شما: {fa_digits(stats.joined)} نفر",
+        f"🛍 خرید کرده‌اند: {fa_digits(stats.bought)} نفر",
+        (
+            f"⏳ تا تخفیف بعدی: {next_reward} خرید دیگر از دعوت‌شدگان"
+            if plan.reward_on_purchase
+            else f"⏳ تا تخفیف بعدی: {next_reward} نفر دیگر"
+        ),
+        "",
+        f"💰 مجموع تخفیف کسب‌شده: {format_price(plan.reward_earned(stats))} تومان",
+        f"✅ استفاده‌شده: {format_price(stats.reward_used)} تومان",
+        f"🎁 قابل استفاده در خرید بعدی: {format_price(plan.reward_left(stats))} تومان",
+    ]
+    share_text = (
+        "با این لینک وارد ربات ناشتایی شو و در اولین سفارشت"
+        f" {format_price(plan.first_buy_discount)} تومان تخفیف بگیر 🌿"
+    )
+    return "\n".join(lines), keyboards.referral(link, share_text)
+
+
+async def show_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """/referral, or 🎁 in the main menu: the plan and the user's invitations."""
+    if update.callback_query:
+        await update.callback_query.answer()
+    text, markup = _referral_view(context, _chat_id(update))
+    await _send(update, text, markup)
     return MENU
 
 

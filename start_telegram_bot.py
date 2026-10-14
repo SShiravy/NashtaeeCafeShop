@@ -1,4 +1,5 @@
 from Database import create_db_and_tables
+from Models.referral import ReferralPlan
 from Settings import LoggerConfig, build_logger, settings
 from TelegramBot import build_application
 
@@ -21,6 +22,12 @@ def main() -> None:
         admin_id=settings.TELEGRAM_ADMIN_ID,
         proxy=settings.TELEGRAM_PROXY,
         support_id=settings.TELEGRAM_SUPPORT_ID,
+        referral_plan=ReferralPlan(
+            first_buy_discount=settings.REFERRAL_FIRST_BUY_DISCOUNT,
+            reward_every=settings.REFERRAL_REWARD_EVERY,
+            reward_discount=settings.REFERRAL_REWARD_DISCOUNT,
+            reward_on_purchase=settings.REFERRAL_REWARD_ON_PURCHASE,
+        ),
     ).run_polling()
 
 

@@ -1,8 +1,11 @@
 """Database access for the bot; takes and returns Models dataclasses, never table rows."""
 
+import secrets
+import string
 from dataclasses import asdict
 
-from sqlmodel import col, func, or_, select
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, col, func, or_, select
 
 from Database.database import get_session
 from Database.tables import (
@@ -11,11 +14,16 @@ from Database.tables import (
     OrderTable,
     PollResponseTable,
     ProductTable,
+    ReferralTable,
 )
 from Models.customer import Customer
 from Models.menu import Item, Product, ProductCategory
-from Models.order import Order, OrderState
+from Models.order import NO_DISCOUNT, Discount, Order, OrderState
 from Models.poll import PollResponse
+from Models.referral import JoinResult, ReferralStats
+
+REFERRAL_CODE_LENGTH = 8
+REFERRAL_CODE_ALPHABET = string.ascii_uppercase + string.digits
 
 
 def get_products(only_available: bool = True) -> list[Product]:
@@ -177,6 +185,7 @@ def create_order(
     customer: Customer,
     address: str | None,
     state: OrderState = OrderState.PENDING,
+    discount: Discount = NO_DISCOUNT,
 ) -> Order:
     """Save a new order, creating or updating its customer, and return it numbered."""
     with get_session() as session:
@@ -196,6 +205,8 @@ def create_order(
             customer=customer_row,
             address=address,
             state=state,
+            first_buy_discount=discount.first_buy,
+            reward_discount=discount.reward,
         )
         # Added before the product lookups below flush the session, so the new
         # rows linked to existing customer/product rows are already part of it.
@@ -232,3 +243,109 @@ def save_poll_response(response: PollResponse) -> bool:
         session.add(PollResponseTable.from_model(response))
         session.commit()
     return True
+
+
+# ---------- referral plan ----------
+# A customer "has bought" once they have an order that wasn't canceled, so
+# canceling an order gives back the referral discounts it used.
+
+
+def _buyers():
+    """Chat ids of the customers who have bought."""
+    return (
+        select(CustomerTable.chat_id)
+        .join(OrderTable)
+        .where(OrderTable.state != OrderState.CANCELED)
+    )
+
+
+def _has_bought(session: Session, chat_id: str) -> bool:
+    row = session.exec(_buyers().where(CustomerTable.chat_id == chat_id)).first()
+    return row is not None
+
+
+def _new_referral_code(session: Session) -> str:
+    while True:
+        code = "".join(
+            secrets.choice(REFERRAL_CODE_ALPHABET) for _ in range(REFERRAL_CODE_LENGTH)
+        )
+        taken = session.exec(
+            select(CustomerTable.id).where(CustomerTable.referral_code == code)
+        ).first()
+        if taken is None:
+            return code
+
+
+def issue_referral_code(chat_id: str) -> str | None:
+    """The customer's invite code, made the first time; None until they have bought."""
+    with get_session() as session:
+        row = session.exec(
+            select(CustomerTable).where(CustomerTable.chat_id == chat_id)
+        ).first()
+        if row is None:
+            return None
+        if row.referral_code is None:
+            if not _has_bought(session, chat_id):
+                return None
+            row.referral_code = _new_referral_code(session)
+            session.add(row)
+            session.commit()
+        return row.referral_code
+
+
+def add_referral(code: str, chat_id: str) -> JoinResult:
+    """Record that chat_id started the bot with the customer's invite code."""
+    with get_session() as session:
+        referrer = session.exec(
+            select(CustomerTable).where(CustomerTable.referral_code == code)
+        ).first()
+        if referrer is None:
+            return JoinResult.UNKNOWN_CODE
+        if referrer.chat_id == chat_id:
+            return JoinResult.OWN_CODE
+        invited = session.exec(
+            select(ReferralTable.id).where(ReferralTable.chat_id == chat_id)
+        ).first()
+        if invited is not None:
+            return JoinResult.ALREADY_INVITED
+        if _has_bought(session, chat_id):
+            return JoinResult.ALREADY_BOUGHT
+        session.add(ReferralTable(referrer_id=referrer.id, chat_id=chat_id))
+        try:
+            session.commit()
+        except IntegrityError:  # the same chat was recorded in the meantime
+            return JoinResult.ALREADY_INVITED
+        return JoinResult.JOINED
+
+
+def first_buy_discount_due(chat_id: str) -> bool:
+    """Whether the chat joined with an invite link and hasn't bought yet."""
+    with get_session() as session:
+        invited = session.exec(
+            select(ReferralTable.id).where(ReferralTable.chat_id == chat_id)
+        ).first()
+        return invited is not None and not _has_bought(session, chat_id)
+
+
+def get_referral_stats(chat_id: str) -> ReferralStats:
+    """The users the customer invited, and the reward discount they used so far."""
+    with get_session() as session:
+        customer_id = session.exec(
+            select(CustomerTable.id).where(CustomerTable.chat_id == chat_id)
+        ).first()
+        if customer_id is None:
+            return ReferralStats(joined=0, bought=0, reward_used=0)
+        invited = ReferralTable.referrer_id == customer_id
+        joined = session.exec(select(func.count(ReferralTable.id)).where(invited)).one()
+        bought = session.exec(
+            select(func.count(ReferralTable.id)).where(
+                invited, col(ReferralTable.chat_id).in_(_buyers())
+            )
+        ).one()
+        reward_used = session.exec(
+            select(func.coalesce(func.sum(OrderTable.reward_discount), 0)).where(
+                OrderTable.customer_id == customer_id,
+                OrderTable.state != OrderState.CANCELED,
+            )
+        ).one()
+        return ReferralStats(joined=joined, bought=bought, reward_used=reward_used)

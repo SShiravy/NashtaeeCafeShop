@@ -3,7 +3,7 @@ from Settings import timing
 from datetime import datetime
 from Models.customer import Customer
 from Models.menu import Item, Product, ProductCategory
-from Models.order import Order, OrderState
+from Models.order import Discount, Order, OrderState
 from Models.poll import PollResponse
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
@@ -17,6 +17,8 @@ class CustomerTable(SQLModel, table=True):
     phone: str = Field(index=True)
     chat_id: str = Field(unique=True, index=True)
     company: str = Field(default="")
+    # Invite link code (Models.referral), given once the customer has bought
+    referral_code: str | None = Field(default=None, unique=True, index=True)
 
     orders: list["OrderTable"] = Relationship(back_populates="customer")
 
@@ -85,6 +87,9 @@ class OrderTable(SQLModel, table=True):
     address: Optional[str] = Field(default=None)  # default is reciving in CafeShop
     state: OrderState = Field(default=OrderState.PENDING, index=True)
     created_at: datetime = Field(default_factory=timing.now, index=True)
+    # Models.order.Discount; the server defaults fill orders saved before them
+    first_buy_discount: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    reward_discount: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
 
     customer: CustomerTable = Relationship(back_populates="orders")
     items: list["OrderItemTable"] = Relationship(
@@ -99,6 +104,7 @@ class OrderTable(SQLModel, table=True):
             address=self.address,
             state=self.state,
             created_at=self.created_at,
+            discount=Discount(self.first_buy_discount, self.reward_discount),
         )
 
 
@@ -120,6 +126,20 @@ class OrderItemTable(SQLModel, table=True):
 
     def to_model(self) -> Item:
         return Item(product=self.product.to_model(), count=self.count)
+
+
+class ReferralTable(SQLModel, table=True):
+    """
+    A user who started the bot with a customer's invite link (Models.referral)
+    """
+
+    __tablename__ = "referrals"  # type: ignore
+
+    id: int | None = Field(default=None, primary_key=True)
+    referrer_id: int = Field(foreign_key="customers.id", index=True)
+    # The invited user; not in customers until their first order
+    chat_id: str = Field(unique=True, index=True)  # only their first invite counts
+    created_at: datetime = Field(default_factory=timing.now)
 
 
 class PollResponseTable(SQLModel, table=True):

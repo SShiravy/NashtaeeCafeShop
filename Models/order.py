@@ -15,6 +15,21 @@ class OrderState(Enum):
     CANCELED = "کنسل شده"  # admin/customer canceled the order
 
 
+@dataclass(slots=True, frozen=True)
+class Discount:
+    """Referral discounts of an order in toman (see Models.referral)."""
+
+    first_buy: int = 0  # an invited customer's first order
+    reward: int = 0  # earned by inviting others
+
+    @property
+    def total(self) -> int:
+        return self.first_buy + self.reward
+
+
+NO_DISCOUNT = Discount()
+
+
 @dataclass(slots=True)
 class Order:
     items: list[Item]
@@ -23,3 +38,4 @@ class Order:
     address: Optional[str] = field(default=None)  # default is reciving in CafeShop
     state: OrderState = field(default=OrderState.PENDING)
     created_at: datetime = field(default_factory=timing.now)
+    discount: Discount = field(default_factory=Discount)
