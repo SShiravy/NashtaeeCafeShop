@@ -4,6 +4,8 @@ from datetime import datetime
 from Models.customer import Customer
 from Models.menu import Item, Product, ProductCategory
 from Models.order import Order, OrderState
+from Models.poll import PollResponse
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -118,3 +120,60 @@ class OrderItemTable(SQLModel, table=True):
 
     def to_model(self) -> Item:
         return Item(product=self.product.to_model(), count=self.count)
+
+
+class PollResponseTable(SQLModel, table=True):
+    """
+    One user's finished poll (Models.poll.PollResponse), its answers are in poll_answers
+    """
+
+    __tablename__ = "poll_responses"  # type: ignore
+    __table_args__ = (UniqueConstraint("poll", "chat_id"),)  # one response per user
+
+    id: int | None = Field(default=None, primary_key=True)
+    poll: str  # Poll.key
+    chat_id: str
+    telegram_name: str
+    telegram_username: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=timing.now, index=True)
+
+    answers: list["PollAnswerTable"] = Relationship(
+        back_populates="response", cascade_delete=True
+    )
+
+    @classmethod
+    def from_model(cls, response: PollResponse) -> "PollResponseTable":
+        return cls(
+            poll=response.poll,
+            chat_id=response.chat_id,
+            telegram_name=response.telegram_name,
+            telegram_username=response.telegram_username,
+            answers=[
+                PollAnswerTable(
+                    question_number=answer.question_number,
+                    question=answer.question,
+                    answer=answer.answer,
+                )
+                for answer in response.answers
+            ],
+        )
+
+
+class PollAnswerTable(SQLModel, table=True):
+    """
+    One answer of a poll response, the chosen option or the typed text
+    """
+
+    __tablename__ = "poll_answers"  # type: ignore
+
+    response_id: int | None = Field(
+        default=None,
+        foreign_key="poll_responses.id",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    question_number: int = Field(primary_key=True)
+    question: str
+    answer: str
+
+    response: PollResponseTable = Relationship(back_populates="answers")

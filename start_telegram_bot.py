@@ -1,3 +1,4 @@
+from Database import create_db_and_tables
 from Settings import LoggerConfig, build_logger, settings
 from TelegramBot import build_application
 
@@ -11,6 +12,7 @@ def main() -> None:
             telegram_channel=settings.TELEGRAM_REPORT_CHANNEL,
         )
     )
+    create_db_and_tables()
     logger.info(
         "Starting Nashtaee bot%s", " via proxy" if settings.TELEGRAM_PROXY else ""
     )

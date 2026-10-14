@@ -36,6 +36,10 @@ CUSTOM_QTY_PREFIX = "custom_qty:"  # custom_qty:<Product.name>
 RECEIVE_PREFIX = "receive:"  # receive:<PICKUP|DELIVERY>
 ADMIN_CONFIRM_PREFIX = "admin_confirm:"  # admin_confirm:<pending order id>
 ADMIN_CANCEL_PREFIX = "admin_cancel:"  # admin_cancel:<pending order id>
+POLL = "poll"  # /start parameter: t.me/<bot>?start=poll
+POLL_ANSWER_PREFIX = "poll_ans:"  # poll_ans:<question index>:<option index>
+POLL_QUESTION_PREFIX = "poll_q:"  # poll_q:<question index>, shows that question
+POLL_SKIP_PREFIX = "poll_skip:"  # poll_skip:<question index> of an optional question
 
 PICKUP = "pickup"
 DELIVERY = "delivery"
@@ -54,7 +58,6 @@ def main_menu(categories: list[ProductCategory]) -> InlineKeyboardMarkup:
         for category in categories
     ]
     rows.append([InlineKeyboardButton("🛒 سبد خرید", callback_data=CART)])
-    rows.append([InlineKeyboardButton("👤 اطلاعات من", callback_data=PROFILE)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -239,4 +242,42 @@ def profile(known: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📞 تغییر شماره", callback_data=PROFILE_PHONE)]
         )
     rows.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data=MAIN)])
+    return InlineKeyboardMarkup(rows)
+
+
+def _poll_back(index: int) -> InlineKeyboardButton:
+    """To the previous question, or to the main menu from the first one."""
+    data = f"{POLL_QUESTION_PREFIX}{index - 1}" if index else MAIN
+    return InlineKeyboardButton("🔙 بازگشت", callback_data=data)
+
+
+def poll_options(
+    index: int, options: list[str], selected: str | None
+) -> InlineKeyboardMarkup:
+    """selected: the answer given before going back to this question, marked ✅."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"✅ {option}" if option == selected else option,
+                callback_data=f"{POLL_ANSWER_PREFIX}{index}:{n}",
+            )
+        ]
+        for n, option in enumerate(options)
+    ]
+    rows.append([_poll_back(index)])
+    return InlineKeyboardMarkup(rows)
+
+
+def poll_typed(index: int, optional: bool) -> InlineKeyboardMarkup:
+    """For a question answered by typing."""
+    rows = []
+    if optional:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "⏭ رد شدن", callback_data=f"{POLL_SKIP_PREFIX}{index}"
+                )
+            ]
+        )
+    rows.append([_poll_back(index)])
     return InlineKeyboardMarkup(rows)

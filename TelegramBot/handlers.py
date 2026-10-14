@@ -17,6 +17,7 @@ from Database import repository
 from Models.customer import Customer
 from Models.menu import Item, Product, ProductCategory
 from Models.order import OrderState
+from Models.poll import POLL, PollAnswer, PollQuestion, PollResponse
 from TelegramBot import keyboards as keyboards
 from TelegramBot.PanelAdmin import keyboards as admin_keyboards
 from TelegramBot.utils import (
@@ -30,7 +31,7 @@ from TelegramBot.utils import (
 log = logging.getLogger(__name__)
 
 # Conversation states
-MENU, CUSTOM_QTY, RECEIVE, NAME, PHONE, ADDRESS, CONFIRM, COMPANY = range(8)
+MENU, CUSTOM_QTY, RECEIVE, NAME, PHONE, ADDRESS, CONFIRM, COMPANY, POLL_TEXT = range(9)
 
 MAX_QTY = 99
 
@@ -198,6 +199,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"سلام {name or 'دوست ناشتایی'} 🌿\nبه ناشتایی خوش آمدید.",
         reply_markup=ReplyKeyboardRemove(),
     )
+    if context.args == [keyboards.POLL]:  # opened with t.me/<bot>?start=poll
+        return await open_poll(update, context)
     await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
     return MENU
 
@@ -421,7 +424,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # An inline keyboard and ReplyKeyboardRemove can't share one message.
     await message.reply_text(
         "✅ نام، شرکت و شماره شما ذخیره شد و در سفارش‌های بعدی دوباره پرسیده نمی‌شود."
-        "\n(از «👤 اطلاعات من» در منوی اصلی می‌توانید آن‌ها را تغییر دهید.)",
+        "\n(با دستور /profile در منوی ربات می‌توانید آن‌ها را تغییر دهید.)",
         reply_markup=ReplyKeyboardRemove(),
     )
     return await _continue_checkout(update, context)
@@ -516,11 +519,12 @@ def _profile_view(chat_id: str) -> tuple[str, InlineKeyboardMarkup]:
 
 
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
+    """/profile, or 🔙 from changing the name or company."""
+    if update.callback_query:
+        await update.callback_query.answer()
     context.user_data.pop(INFO_RETURN, None)
     text, markup = _profile_view(_chat_id(update))
-    await query.edit_message_text(text, reply_markup=markup)
+    await _send(update, text, markup)
     return MENU
 
 
@@ -841,6 +845,186 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             ]
         ),
     )
+
+
+# ---------- poll ----------
+
+# user_data keys: the answers so far (index in POLL.questions -> option or typed
+# text), and the index of the question waiting for a typed answer.
+POLL_ANSWERS = "poll_answers"
+POLL_TYPING = "poll_typing"
+MAX_POLL_TEXT = 1000
+POLL_DONE = "🙏 شما قبلاً در این نظرسنجی شرکت کرده‌اید. از همراهی‌تان ممنونیم."
+
+
+def _poll_text(index: int) -> str:
+    section, question = POLL.questions[index]
+    number = fa_digits(index + 1)
+    lines = [
+        f"📝 {POLL.title} (سؤال {number} از {fa_digits(len(POLL.questions))})",
+        "",
+    ]
+    if section.title:
+        lines.append(f"🔹 {section.title}")
+        if section.description:
+            lines.append(section.description)
+        lines.append("")
+    lines.append(f"{number}. {question.text}")
+    if not question.options:
+        lines += ["", "✍️ پاسخ خود را بنویسید و ارسال کنید."]
+    return "\n".join(lines)
+
+
+def _poll_question(index: str) -> PollQuestion | None:
+    """The question at this index of POLL.questions, from callback data."""
+    if not index.isdigit() or int(index) >= len(POLL.questions):
+        return None
+    return POLL.questions[int(index)][1]
+
+
+async def _show_poll_question(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, index: int
+) -> int:
+    question = POLL.questions[index][1]
+    if question.options:
+        selected = context.user_data[POLL_ANSWERS].get(index)
+        markup = keyboards.poll_options(index, question.options, selected)
+        await _send(update, _poll_text(index), markup)
+        return MENU
+    context.user_data[POLL_TYPING] = index
+    markup = keyboards.poll_typed(index, question.optional)
+    await _send(update, _poll_text(index), markup)
+    return POLL_TEXT
+
+
+async def open_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """/poll, or /start poll: from the first unanswered question."""
+    query = update.callback_query
+    if repository.has_poll_response(POLL.key, _chat_id(update)):
+        if query:
+            await query.answer(POLL_DONE, show_alert=True)
+        else:
+            await update.message.reply_text(POLL_DONE)
+        return MENU
+    if query:
+        await query.answer()
+    answers = context.user_data.setdefault(POLL_ANSWERS, {})
+    index = next((i for i in range(len(POLL.questions)) if i not in answers), 0)
+    return await _show_poll_question(update, context, index)
+
+
+async def answer_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    data = query.data.removeprefix(keyboards.POLL_ANSWER_PREFIX)
+    index, _, option = data.partition(":")
+    question = _poll_question(index)
+    answers = context.user_data.get(POLL_ANSWERS)
+    if (
+        answers is None  # e.g. the bot restarted, or the poll was already saved
+        or question is None
+        or not option.isdigit()
+        or int(option) >= len(question.options)
+    ):
+        return await open_poll(update, context)
+    await query.answer()
+    answers[int(index)] = question.options[int(option)]
+    return await _next_poll_step(update, context, int(index) + 1)
+
+
+async def show_poll_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """🔙 in the poll: the question in the callback data."""
+    query = update.callback_query
+    index = query.data.removeprefix(keyboards.POLL_QUESTION_PREFIX)
+    if POLL_ANSWERS not in context.user_data or _poll_question(index) is None:
+        return await open_poll(update, context)
+    await query.answer()
+    return await _show_poll_question(update, context, int(index))
+
+
+async def skip_poll_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    index = query.data.removeprefix(keyboards.POLL_SKIP_PREFIX)
+    question = _poll_question(index)
+    answers = context.user_data.get(POLL_ANSWERS)
+    if answers is None or question is None or not question.optional:
+        return await open_poll(update, context)
+    await query.answer()
+    answers.pop(int(index), None)
+    return await _next_poll_step(update, context, int(index) + 1)
+
+
+async def receive_poll_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    index = context.user_data.get(POLL_TYPING)
+    answers = context.user_data.get(POLL_ANSWERS)
+    if index is None or answers is None:
+        await update.message.reply_text(CHOOSE_CATEGORY, reply_markup=_main_menu())
+        return MENU
+    value = update.message.text.strip()
+    if len(value) > MAX_POLL_TEXT:
+        await update.message.reply_text(
+            f"پاسخ حداکثر می‌تواند {fa_digits(MAX_POLL_TEXT)} حرف باشد."
+            " لطفاً کوتاه‌تر بنویسید:"
+        )
+        return POLL_TEXT
+    del context.user_data[POLL_TYPING]
+    answers[index] = value
+    return await _next_poll_step(update, context, index + 1)
+
+
+async def _next_poll_step(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, index: int
+) -> int:
+    """The question at index, or save the poll after the last one."""
+    if index < len(POLL.questions):
+        return await _show_poll_question(update, context, index)
+    return await _finish_poll(update, context)
+
+
+async def _finish_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    answers = context.user_data[POLL_ANSWERS]
+    questions = [question for _, question in POLL.questions]
+    missing = next(
+        (
+            index
+            for index, question in enumerate(questions)
+            if not question.optional and index not in answers
+        ),
+        None,
+    )
+    if missing is not None:  # an old question message was answered out of order
+        return await _show_poll_question(update, context, missing)
+    user = update.effective_user
+    response = PollResponse(
+        poll=POLL.key,
+        chat_id=_chat_id(update),
+        telegram_name=user.full_name,
+        telegram_username=user.username,
+        answers=[
+            PollAnswer(index + 1, question.text, answers[index])
+            for index, question in enumerate(questions)
+            if index in answers
+        ],
+    )
+    try:
+        saved = repository.save_poll_response(response)
+    except Exception:
+        log.exception("Could not save the poll of chat %s", response.chat_id)
+        # The answers are kept, so the last question can be sent again.
+        await _send(
+            update,
+            "ثبت پاسخ‌ها انجام نشد. لطفاً چند لحظه بعد دوباره تلاش کنید.",
+            keyboards.back(f"{keyboards.POLL_QUESTION_PREFIX}{len(questions) - 1}"),
+        )
+        return MENU
+    context.user_data.pop(POLL_ANSWERS)
+    context.user_data.pop(POLL_TYPING, None)
+    if saved:
+        log.info("Poll %s answered by chat %s", POLL.key, response.chat_id)
+        note = "🙏 ممنون که در نظرسنجی ناشتایی شرکت کردید. پاسخ‌های شما ثبت شد."
+    else:
+        note = POLL_DONE
+    await _send(update, note)
+    return MENU
 
 
 # ---------- outside the conversation ----------

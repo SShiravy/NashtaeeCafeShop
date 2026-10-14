@@ -56,9 +56,20 @@ def build_conversation() -> ConversationHandler:
         _callback(handlers.ask_new_name, keyboards.PROFILE_NAME),
         _callback(handlers.ask_new_company, keyboards.PROFILE_COMPANY),
         _callback(handlers.ask_new_phone, keyboards.PROFILE_PHONE),
+        _callback(handlers.open_poll, keyboards.POLL),
+        _callback(handlers.answer_poll, keyboards.POLL_ANSWER_PREFIX, prefix=True),
+        _callback(
+            handlers.show_poll_question, keyboards.POLL_QUESTION_PREFIX, prefix=True
+        ),
+        _callback(handlers.skip_poll_question, keyboards.POLL_SKIP_PREFIX, prefix=True),
     ]
     return ConversationHandler(
-        entry_points=[CommandHandler("start", handlers.start), *navigation],
+        entry_points=[
+            CommandHandler("start", handlers.start),
+            CommandHandler("profile", handlers.show_profile),
+            CommandHandler("poll", handlers.open_poll),
+            *navigation,
+        ],
         states={
             handlers.MENU: [],  # only the navigation entry points apply here
             handlers.CUSTOM_QTY: [
@@ -100,6 +111,7 @@ def build_conversation() -> ConversationHandler:
                 _callback(handlers.ask_new_phone, keyboards.EDIT_PHONE),
                 _callback(handlers.back_to_summary, keyboards.SUMMARY),
             ],
+            handlers.POLL_TEXT: [MessageHandler(TEXT, handlers.receive_poll_text)],
         },
         fallbacks=[CommandHandler("cancel", handlers.cancel_command)],
         allow_reentry=True,
@@ -192,7 +204,7 @@ def build_admin_conversation(admin_id: int) -> ConversationHandler:
         # Leaving for the customer side (or the order buttons) ends the panel
         # input; these don't stop the update, so the customer handlers still run.
         fallbacks=[
-            CommandHandler(["start", "cancel"], admin.leave_panel),
+            CommandHandler(["start", "cancel", "profile", "poll"], admin.leave_panel),
             CallbackQueryHandler(admin.leave_panel, pattern=r"^(?!adm:)"),
         ],
         allow_reentry=True,
@@ -205,10 +217,17 @@ CUSTOMER_COMMANDS = [
     BotCommand("start", "شروع سفارش"),
     BotCommand("cancel", "لغو سفارش"),
     BotCommand("support", "پشتیبانی"),
+    BotCommand("profile", "اطلاعات من"),
+    BotCommand("poll", "شرکت در نظرسنجی"),
 ]
 
+# Shown in an empty chat with the bot, before the user presses Start.
+DESCRIPTION = "ناشتایی، شروع خوبِ روز توعه"
 
-async def _set_commands(app: Application) -> None:
+
+async def _set_bot_info(app: Application) -> None:
+    """The description and the command menu; Telegram keeps them between restarts."""
+    await app.bot.set_my_description(DESCRIPTION)
     await app.bot.set_my_commands(CUSTOMER_COMMANDS)
     try:
         await app.bot.set_my_commands(
@@ -231,7 +250,7 @@ def build_application(
     """admin_id: chat that approves or rejects every order and manages products.
     support_id: what /support sends customers, e.g. an @username.
     """
-    builder = Application.builder().token(token).post_init(_set_commands)
+    builder = Application.builder().token(token).post_init(_set_bot_info)
     if proxy:
         builder = builder.proxy(proxy).get_updates_proxy(proxy)
     app = builder.build()

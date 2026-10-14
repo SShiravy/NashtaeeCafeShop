@@ -5,10 +5,17 @@ from dataclasses import asdict
 from sqlmodel import col, func, or_, select
 
 from Database.database import get_session
-from Database.tables import CustomerTable, OrderItemTable, OrderTable, ProductTable
+from Database.tables import (
+    CustomerTable,
+    OrderItemTable,
+    OrderTable,
+    PollResponseTable,
+    ProductTable,
+)
 from Models.customer import Customer
 from Models.menu import Item, Product, ProductCategory
 from Models.order import Order, OrderState
+from Models.poll import PollResponse
 
 
 def get_products(only_available: bool = True) -> list[Product]:
@@ -204,3 +211,24 @@ def create_order(
         session.commit()
         session.refresh(order_row)
         return order_row.to_model()
+
+
+def has_poll_response(poll: str, chat_id: str) -> bool:
+    """Whether this chat already finished the poll with this key."""
+    with get_session() as session:
+        row = session.exec(
+            select(PollResponseTable.id).where(
+                PollResponseTable.poll == poll, PollResponseTable.chat_id == chat_id
+            )
+        ).first()
+        return row is not None
+
+
+def save_poll_response(response: PollResponse) -> bool:
+    """Save a finished poll; False, saving nothing, if the chat already answered it."""
+    if has_poll_response(response.poll, response.chat_id):
+        return False
+    with get_session() as session:
+        session.add(PollResponseTable.from_model(response))
+        session.commit()
+    return True
