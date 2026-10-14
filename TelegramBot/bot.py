@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, time
 from re import escape
 from warnings import filterwarnings
 
@@ -198,6 +199,8 @@ def build_admin_conversation(admin_id: int) -> ConversationHandler:
     )
 
 
+BACKUP_TIME = time(23, 55)
+
 CUSTOMER_COMMANDS = [
     BotCommand("start", "شروع سفارش"),
     BotCommand("cancel", "لغو سفارش"),
@@ -209,7 +212,11 @@ async def _set_commands(app: Application) -> None:
     await app.bot.set_my_commands(CUSTOMER_COMMANDS)
     try:
         await app.bot.set_my_commands(
-            [*CUSTOMER_COMMANDS, BotCommand("admin", "پنل مدیریت")],
+            [
+                *CUSTOMER_COMMANDS,
+                BotCommand("admin", "پنل مدیریت"),
+                BotCommand("backup", "بک اپ دیتابیس"),
+            ],
             scope=BotCommandScopeChat(app.bot_data["admin_id"]),
         )
     except TelegramError:
@@ -232,6 +239,18 @@ def build_application(
     app.bot_data["support_id"] = support_id
 
     app.add_handler(build_admin_conversation(int(admin_id)), group=-1)
+    app.add_handler(
+        CommandHandler(
+            "backup", admin.backup_command, filters=filters.Chat(int(admin_id))
+        ),
+        group=-1,
+    )
+    app.job_queue.run_daily(
+        admin.send_backup,
+        # The server's own timezone, so "end of the day" is the cafe's evening.
+        BACKUP_TIME.replace(tzinfo=datetime.now().astimezone().tzinfo),
+        name="daily_backup",
+    )
     app.add_handler(build_conversation())
     # The conversation doesn't handle /support, so it reaches this in any step.
     app.add_handler(CommandHandler("support", handlers.support))

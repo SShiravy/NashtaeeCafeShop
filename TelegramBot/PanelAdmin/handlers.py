@@ -5,16 +5,19 @@ Wired up in TelegramBot.bot.
 
 import logging
 import re
+import tempfile
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from telegram import InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes, ConversationHandler
 
 from Database import repository
+from Database.backup import backup_to, database_file
 from Models.menu import Product, ProductCategory
 from Models.order import Order, OrderState
 from TelegramBot import keyboards as customer_keyboards
@@ -596,3 +599,33 @@ async def show_order_actions(
 async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if order := await _open_order(update, keyboards.ORDER_CANCEL_CONFIRM_PREFIX):
         await _close_order(update, context, order, OrderState.CANCELED)
+
+
+# ---------- database backup ----------
+
+
+async def send_backup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a copy of the database to the admin chat (daily job and /backup)."""
+    admin_id = context.bot_data["admin_id"]
+    if database_file() is None:
+        log.warning("Skipping the backup: only SQLite databases can be backed up")
+        return
+    now = datetime.now()
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / f"Nashtaee-{now:%Y-%m-%d_%H-%M}.db"
+        try:
+            backup_to(path)
+            with path.open("rb") as file:
+                await context.bot.send_document(
+                    admin_id,
+                    file,
+                    filename=path.name,
+                    caption=f"🗄 بک اپ دیتابیس ناشتایی\n🕐 {now:%Y/%m/%d %H:%M}",
+                )
+        except Exception:
+            log.exception("Could not send the database backup to the admin")
+
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/backup: a backup right now, on top of the daily one."""
+    await send_backup(context)
